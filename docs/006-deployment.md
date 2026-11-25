@@ -156,6 +156,26 @@ Setup must succeed before polling or work starts. Overview lists missing require
    List personal CLIs, such as one signed in to your own account, as blocked commands.
 4. **Prompts.** Set the team sections: the GitHub disclosure line, review bots, the commit author and the auto-merge condition.
 
+### DingTalk
+
+The DingTalk Source is disabled in the bundle. Enable `dsh-superagent-dingtalk` in `cordis.patch.yml`, restart, and set it up on **Sources → DingTalk**.
+
+| Key | Meaning |
+| --- | --- |
+| `groups` | The conversations this Source listens to, by `openConversationId`. `@ only` receives the messages that address the robot; `All` also reads the rest, and the Policy admission table decides whether they become candidates |
+| `otherChats`, `directMessages` | Whether mentions elsewhere and direct messages are received |
+| `dwsEnabled`, `dwsCli` | Whether `dws` reads the groups as the operator, and the command or absolute path to run it |
+| `mentionNames` | The robot's display names in the group. A history read carries no structured mention, so `@name` in the text is the only addressing signal it has |
+| `streamClientId`, `streamClientSecret` | The application robot that receives over Stream. The application needs the robot capability, Stream as its receiving mode, and a published version |
+| `streamRobotCode` | The robot that posts through the OpenAPI when no group robot covers a conversation; defaults to the AppKey |
+| `bots` | One custom group robot per conversation: its `access_token`, and the signing * when it requires one. It posts to its own conversation and receives nothing |
+
+A message an AI tool sent through the operator's own account carries `messageAiSendFlag` and is skipped by the history read: `sendType` alone reports it as `user`, so without that flag the agent would read its own words as a new request. The Stream callback carries no such field, which is why this Source never posts as the operator.
+
+Reading and writing use different identities on purpose. `dws` reads as the operator, because DingTalk has no interface that lets a robot read a group's full history; every reply is posted as a bot, so the agent's words are never attributed to the operator. `dws chat message send` is therefore never used, and `blockedCommands` may name it to make that structural.
+
+The group a message came from is enough to answer it; no `prepare` command or repository is needed for chat-only Sources. With an application robot that is not yet approved, `dws` alone still works: it polls the groups, and a group robot webhook posts the answers.
+
 ### Management API
 
 The panel uses a local HTTP API that agents can also call. `SETUP.md` uses it to save settings, and the service script reads `GET state`.

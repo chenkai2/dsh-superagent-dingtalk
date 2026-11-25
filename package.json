@@ -1,10 +1,9 @@
 {
-  "name": "dsh-superagent",
-  "author": "DeepSeek Harness Team <team@dsh.dev>",
+  "name": "@chenkai114/dsh-superagent-dingtalk",
+  "author": "chenkai2",
   "license": "MIT",
-  "version": "0.1.0",
-  "private": true,
-  "description": "A proactive agent for one GitHub repository, as a DSH (DeepSeek Harness) bundle: it listens to GitHub and optionally Feishu, evaluates requests under a Policy, turns authorized ones into Tickets, and executes each in its own DSH Session.",
+  "version": "0.0.1",
+  "description": "DingTalk source for dsh-superagent: reads configured groups through the official dws CLI, receives messages addressed to an application robot over Stream, and replies as a bot.",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -17,7 +16,8 @@
     "./github-watch": "./lib/github-watch.js",
     "./feishu-watch": "./lib/feishu-watch.js",
     "./package.json": "./package.json",
-    "./locale/*.json": "./locale/*.json"
+    "./locale/*.json": "./locale/*.json",
+    "./dingtalk-watch": "./lib/dingtalk-watch.js"
   },
   "files": [
     "lib",
@@ -48,7 +48,9 @@
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "pnpm typecheck && pnpm test && pnpm build"
+    "check": "pnpm typecheck && pnpm test && pnpm build",
+    "test:ci": "vitest run",
+    "prepublishOnly": "node -e \"const ci=process.env.GITHUB_ACTIONS;const dry=String(process.env.npm_config_dry_run||'')==='true';const boot=process.env.ALLOW_FIRST_PUBLISH==='1';if(ci)process.exit(0);if(dry)process.exit(0);if(boot){console.warn('\\\\n[首次发布] 允许本地发布一次：npm 上还没有这个包，Trusted Publisher 无处可配。');console.warn('  发完立刻去包设置里配 Trusted Publisher，之后只走 GitHub Release。\\\\n');process.exit(0);}console.error('\\\\n[拒绝发布] 本包只通过 GitHub Release + npm Trusted Publishing 发布。');console.error('  首次上架例外：ALLOW_FIRST_PUBLISH=1 npm publish --access public');console.error('  其余情况：升版本 → 提交 → 发 GitHub Release（tag=v<version>）→ 等 Actions 完成。\\\\n');process.exit(1)\""
   },
   "engines": {
     "node": "^22.19.0 || >=24.0.0",
@@ -57,7 +59,8 @@
   "packageManager": "pnpm@11.7.0",
   "dependencies": {
     "proper-lockfile": "4.1.2",
-    "zod": "4.4.3"
+    "zod": "4.4.3",
+    "dingtalk-stream": "2.1.6-beta.1"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "4.0.5-alpha.1",
@@ -121,5 +124,26 @@
     "react-dom": "18.3.1",
     "@types/react-dom": "18.3.7",
     "@deepseek-ai/dsh-subprocess": "0.2.1-alpha.2"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "superagent",
+    "dingtalk",
+    "dws",
+    "stream",
+    "bot",
+    "agent"
+  ],
+  "homepage": "https://github.com/chenkai2/dsh-superagent-dingtalk#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chenkai2/dsh-superagent-dingtalk.git"
+  },
+  "bugs": {
+    "url": "https://github.com/chenkai2/dsh-superagent-dingtalk/issues"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

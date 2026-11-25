@@ -68,8 +68,12 @@ export interface Executor {
   stop(ticket: Ticket, assignment: Assignment, reason: string): void
 }
 
-/** A message for a Channel; `ticketId` names the Ticket it is for, when there is one. */
-export interface OutboundMessage { id: string; channel: ChannelRef; text: string; kind: 'acknowledgement' | 'reply' | 'notice'; ticketId?: string }
+/**
+ * A message for a Channel; `ticketId` names the Ticket it is for, when there is one, and `purpose` says which rule
+ * allowed it, so a Channel can present a question for a person differently from a result.
+ */
+export interface OutboundMessage { id: string; channel: ChannelRef; text: string; kind: 'acknowledgement' | 'reply' | 'notice'; ticketId?: string
+  purpose?: 'acknowledgement' | 'answer' | 'result' | 'attention' }
 /** A queued message waits (`pending`), went out (`sent`), or was dropped because its conversation can never receive it (`dropped`). */
 export type ReplyStatus = 'pending' | 'sent' | 'dropped'
 /** The messages queued for Channels; the Engine queues them inside its commands, and a sender delivers them later. */

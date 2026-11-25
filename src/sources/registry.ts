@@ -95,7 +95,13 @@ export class SourceRegistry implements SourceScope {
   async send(message: OutboundMessage, commands: Commands): Promise<'sent' | 'gone' | 'waiting'> {
     const kind = this.kinds.get(message.channel.source)
     if (!kind) return 'waiting'
-    return kind.channel ? kind.channel.send({ commands }, message) : 'gone'
+    if (!kind.channel) return 'gone'
+    // A Channel may need its own Source's settings to choose a sender, so resolve them here rather than in every Channel.
+    const config = <C extends Record<string, unknown>>(id: string): C | undefined => {
+      const instance = this.instance<C>(id)
+      return instance?.enabled ? instance.config : undefined
+    }
+    return kind.channel.send({ commands, config }, message)
   }
   link(channel: ChannelRef, links: ChannelLinks): ChannelLink {
     const link = this.kinds.get(channel.source)?.channel?.link(channel.address, links)
