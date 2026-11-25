@@ -81,8 +81,10 @@ jobs:
       - name: 发布（scoped 包，access public）
         run: |
           if [ "${{ inputs.dry_run }}" = "true" ]; then
+            # npm publish --dry-run 仍会向 registry 查版本号，当前版本一旦已发布就必然失败，
+            # 所以干跑只验证打包结果；发布路径本身由 Release 触发的那次真实运行覆盖。
             echo "dry run：只检查将要发布的产物"
-            npm publish --dry-run
+            npm pack --dry-run
           else
             npm publish --provenance --access public
           fi
