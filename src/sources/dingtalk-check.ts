@@ -32,25 +32,31 @@ export async function checkDingtalk(commands: Commands, config: DingtalkConfig):
     items.push({ key: 'dws', ok: false, detail: String((error as { message?: string })?.message ?? error).slice(0, 200) })
   }
   const stream = streamOf(config)
+  // dws reads history; without it the Stream connection is the only way to receive anything, so it becomes required.
+  const streamRequired = !dwsOk
   items.push(stream
     ? { key: 'stream', ok: true, detail: stream.clientId }
-    : { key: 'stream', ok: false, detail: 'Stream robot credentials are incomplete' })
+    : streamRequired
+      ? { key: 'stream', ok: false, detail: 'Required without dws: it is the only way to receive a message' }
+      : { key: 'stream', ok: false, detail: 'Optional while dws reads: without it @ messages arrive by polling only' })
   // Signing is optional: a robot the group does not require a signature from needs only its token.
   const robots = config.bots.filter(bot => bot.token)
   const botOk = robots.length > 0
+  // A robot code can be set on its own, without the Stream credentials that read messages.
+  const robotCode = config.streamRobotCode || config.streamClientId
+  const dwsPosts = dwsOk && Boolean(robotCode)
   items.push(botOk
     ? { key: 'bots', ok: true, detail: robots.map(bot => bot.name || bot.conversationId || 'default').join(', ') }
-    : { key: 'bots', ok: false, detail: 'No group robot has a token' })
+    : { key: 'bots', ok: false, detail: Boolean(stream) || dwsPosts
+      ? 'Optional: replies go through the callback address or as the application robot'
+      : 'Required: nothing can post a reply yet, so set a token or an application robot code' })
   const groups = config.groups.filter(group => group.conversationId)
   const groupsOk = groups.length > 0 || config.otherChats
   items.push(groupsOk
     ? { key: 'groups', ok: true, detail: config.groups.length > 0 ? `${groups.length}` : 'other chats' }
     : { key: 'groups', ok: false, detail: 'No group is listened to' })
-  // The transports are alternatives: either one receives. Replies go through a group robot, the callback's own address,
-  // or dws as the application robot, which itself needs that robot's code.
-  // A robot code can be set on its own, without the Stream credentials that read messages.
-  const robotCode = config.streamRobotCode || config.streamClientId
-  const receives = Boolean(stream) || dwsOk
-  const replies = botOk || Boolean(stream) || (dwsOk && Boolean(robotCode))
+  // Receiving needs dws or the Stream connection; replying needs a robot, the callback address, or dws as the app robot.
+  const receives = dwsOk || Boolean(stream)
+  const replies = botOk || Boolean(stream) || dwsPosts
   return { ok: receives && replies && groupsOk, items }
 }

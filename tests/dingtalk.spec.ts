@@ -163,7 +163,12 @@ it('keeps reporting the remaining checks when dws is missing', async () => {
 it('accepts the Stream alone, and accepts dws alone only when it can also post as the application robot', async () => {
   const group = [{ conversationId: 'cid/A' }]
   const streamOnly = DingtalkConfigSchema.parse({ groups: group, streamClientId: 'id', streamClientSecret: 'secret' })
-  await expect(dingtalkKind.check!(checkingHost(streamOnly))).resolves.toMatchObject({ ok: true })
+  // Without dws the Stream connection is the only reader, so it is the required half rather than an optional one.
+  const alone = await dingtalkKind.check!(checkingHost(streamOnly))
+  expect(alone).toMatchObject({ ok: true })
+  expect(alone.items[1]).toMatchObject({ key: 'stream', ok: true })
+  const neither = await dingtalkKind.check!(checkingHost(DingtalkConfigSchema.parse({ groups: group, dwsEnabled: false })))
+  expect(neither.items[1]!.detail).toContain('Required without dws')
   // dws reads and can post as the application robot only when that robot's code is present.
   const dwsOnly = DingtalkConfigSchema.parse({ groups: group })
   expect((await dingtalkKind.check!(checkingHost(dwsOnly, 'v1.0.68'))).ok).toBe(false)
