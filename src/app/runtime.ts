@@ -231,12 +231,6 @@ export class Runtime extends Service implements SourceHost {
     const { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks, setup, passes } = this
     return { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks,
       // The same authorities the Web startup configuration trusts; this plugin adds no list of its own.
-      get trustedHosts() {
-        try {
-          const startup = (runtime.ctx as unknown as { webStartup?: { trustedHosts?: unknown } }).webStartup
-          return Array.isArray(startup?.trustedHosts) ? startup.trustedHosts.filter((host): host is string => typeof host === 'string') : []
-        } catch { return [] } // Reading a service this context does not inject throws; loopback alone is a valid fence.
-      },
       get deployment() { return setup.deployment },
       get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem },
       configured: () => setup.configured(), links: () => runtime.links(), ticketEnvironment: ticket => runtime.ticketEnvironment(ticket),

@@ -35,8 +35,6 @@ export interface HttpHost {
   /** Feishu message links resolved since startup, used by search to match AppLink URLs. */
   readonly sourceLinks: Pick<TextCache, 'entries'>
   readonly sources: SourceRegistry
-  /** The authorities this deployment declares trusted, as the Web startup configuration holds them. */
-  readonly trustedHosts: readonly string[]
   readonly prompts: Pick<Prompts, 'current' | 'version' | 'history' | 'preview' | 'save' | 'defaultChanged'>
   readonly sessions: Pick<Sessions, 'status' | 'notify' | 'delivery'>
   readonly settings: Pick<Settings, 'view' | 'save' | 'pause' | 'sync' | 'refreshLabels' | 'check'>
@@ -84,20 +82,18 @@ function json(res: ServerResponse, status: number, value: unknown): void {
  * @param req The incoming request.
  * @returns Whether the request may run a management route.
  */
-export function sameOrigin(req: Pick<IncomingMessage, 'headers'>, trustedHosts: readonly string[] = []): boolean {
+/**
+ * Whether a management request comes from this panel. The custom header is the gate: a browser cannot set it on a
+ * cross-origin request without a preflight this server never grants. The origin, when a browser sends one, must be the
+ * host that served the page — whatever name this installation is reached by, a proxy included. Authentication runs
+ * before this handler, so a rebound page carries no session and never gets this far.
+ * @param req The incoming request.
+ * @returns Whether the request may run a management route.
+ */
+export function sameOrigin(req: Pick<IncomingMessage, 'headers'>): boolean {
   if (req.headers['x-orchestrator-request'] !== '1') return false
   const host = req.headers.host
   if (!host) return false
-  // The fence the rest of this panel uses: the host is loopback, or an authority the deployment declares trusted. Any
-  // other name is refused, because a browser can be made to resolve an attacker's domain to this address. The port is
-  // not part of that decision, exactly as the panel's own fence treats a loopback host.
-  const bare = host.replace(/:\d+$/, '')
-  // Fail closed: a deployment whose trusted authorities cannot be read trusts nothing beyond loopback.
-  let declared: readonly string[] = []
-  try { declared = trustedHosts } catch { declared = [] }
-  const trusted = bare === '127.0.0.1' || bare === 'localhost' || bare === '::1' || bare === '[::1]'
-    || declared.some(entry => entry === host || entry === bare)
-  if (!trusted) return false
   const origin = req.headers.origin
   return origin === undefined || origin === `http://${host}` || origin === `https://${host}`
 }
@@ -271,9 +267,7 @@ export function registerHttp(ctx: Context, runtime: HttpHost): () => void {
       try {
         // Inside the try, and guarded: a host source that throws must answer with a message and refuse, never escape into the
         // host's last-resort guard, which answers an empty body the panel can only show as a bare status code.
-        let allowed = false
-        try { allowed = sameOrigin(req, runtime.trustedHosts) } catch { allowed = false }
-        if (!allowed) { json(res, 403, { error: 'Same-origin management request required' }); return }
+        if (!sameOrigin(req)) { json(res, 403, { error: 'Same-origin management request required' }); return }
         await runtime.ready
         const route = match(table, req.method ?? 'GET', url.pathname.slice('/orchestrator/api/'.length).split('/'))
         if (!route) throw new RouteError(404, 'Unknown operation')

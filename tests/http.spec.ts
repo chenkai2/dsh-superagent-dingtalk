@@ -10,14 +10,10 @@ import { SetupError } from '../src/setup.ts'
 type Handler = (req: unknown, res: unknown) => Promise<void>
 type Headers = Record<string, string | undefined>
 /** Mount management HTTP routes on a fake web server and return a request helper that includes default panel headers. */
-function serve(runtime: Partial<Record<keyof HttpHost, unknown>>, host = '127.0.0.1',
-  trustedHosts: string[] | (() => string[]) = []) {
+function serve(runtime: Partial<Record<keyof HttpHost, unknown>>, host = '127.0.0.1') {
   let handler: Handler = async () => {}
   const ctx = { webServer: { host, port: 3082, register: (route: { handler: Handler }) => { handler = route.handler; return () => {} } } }
-    // The host exposes the trusted authorities as a property; a test needs it to be able to throw like an unbound service.
-  const base = { ready: Promise.resolve(), ...runtime } as Record<string, unknown>
-  Object.defineProperty(base, 'trustedHosts', { get: typeof trustedHosts === 'function' ? trustedHosts : () => trustedHosts })
-  registerHttp(ctx as never, base as unknown as HttpHost)
+    registerHttp(ctx as never, { ready: Promise.resolve(), ...runtime } as unknown as HttpHost)
   return async (method: string, path: string, body?: unknown, headers: Headers = {}) => {
     let status = 0, text = ''
     const chunks = body === undefined ? [] : [Buffer.from(typeof body === 'string' ? body : JSON.stringify(body))]
@@ -71,32 +67,20 @@ it('decodes path parameters and parses each route\'s query', async () => {
   expect(seen).toEqual(['feishu:oc_1:om/root', { filter: { kinds: ['accept', 'reopen'], since: expect.any(String) }, offset: 0, limit: 200 }])
 })
 
-it('answers only a same-origin request from the panel, on loopback or a host this installation allows', async () => {
+it('answers only a same-origin request from the panel, on whichever host serves it', async () => {
   const call = serve({ sessions: { delivery: async () => 'injected' }, engine: { unsubscribe: () => true } })
   const post = (headers: Headers) => call('POST', 'threads/github%3A1/unsubscribe', undefined, headers)
-  // A host nobody named is refused even with the header, because a browser can be made to resolve an attacker's name here.
-  for (const headers of [{ 'x-orchestrator-request': undefined }, { host: 'evil.example:3082' },
-    { origin: 'http://evil.example' }, { host: 'localhost:3082', origin: 'http://127.0.0.1:3082' },
-    { host: 'other.example.com', origin: 'https://other.example.com' }]) {
+  // The header is the gate: a browser cannot set it cross-origin without a preflight this server never grants.
+  for (const headers of [{ 'x-orchestrator-request': undefined },
+    { origin: 'http://evil.example' }, { host: 'localhost:3082', origin: 'http://127.0.0.1:3082' }]) {
     expect(await post(headers), JSON.stringify(headers)).toEqual({ status: 403,
       body: { error: 'Same-origin management request required' } })
   }
   expect(await post({ host: 'localhost:3082', origin: 'http://localhost:3082' })).toMatchObject({ status: 200 })
-  // Behind a proxy the panel is reached by that name, so the setting names it and the Origin matches it.
-  const proxied = serve({ sessions: { delivery: async () => 'injected' }, engine: { unsubscribe: () => true } }, '127.0.0.1', ['dsh.example.com'])
-  const viaProxy = (headers: Headers) => proxied('POST', 'threads/github%3A1/unsubscribe', undefined, headers)
-  expect(await viaProxy({ host: 'dsh.example.com', origin: 'https://dsh.example.com' })).toMatchObject({ status: 200 })
-  expect(await viaProxy({ host: 'other.example.com', origin: 'https://other.example.com' })).toMatchObject({ status: 403 })
+  // Reached through a proxy the panel accepts the name that served the page, because authentication runs before this.
+  expect(await post({ host: 'dsh.example.com', origin: 'https://dsh.example.com' })).toMatchObject({ status: 200 })
   // Management routes require a loopback Web server.
   expect(() => serve({}, '0.0.0.0')).toThrow('Orchestrator management requires a loopback Web server')
-})
-
-it('answers a host source that throws with a message, not an empty body', async () => {
-  // The host's own last-resort guard turns an escaping throw into an empty 400, which the panel can only show as a status.
-  const call = serve({ sessions: { delivery: async () => 'injected' }, engine: { unsubscribe: () => true },
-  }, '127.0.0.1', () => { throw new Error('service not injected') })
-  const response = await call('GET', 'state', undefined, { host: 'dsh.example.com', 'x-orchestrator-request': '1' })
-  expect(response).toMatchObject({ status: 403, body: { error: 'Same-origin management request required' } })
 })
 it('answers a prompt save that lost a race with 409, and a settings body over 128 KiB with 400', async () => {
   const saves: unknown[] = []
