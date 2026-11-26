@@ -1,9 +1,9 @@
 // Reading the MCP servers a profile composes, so the Execution settings can offer them by name.
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { expect, it } from 'vitest'
-import { profileMcpServers } from '../src/app/mcp-servers.ts'
+import { installedPlugins, profileFromPath, profileMcpServers } from '../src/app/mcp-servers.ts'
 
 const profile = (text: string, file = 'cordis.patch.yml') => {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-profile-'))
@@ -60,4 +60,22 @@ it('offers nothing, and says why, when the profile cannot be read', () => {
   expect(profileMcpServers(empty, '').servers.size).toBe(0)
   const broken = profile('name: [unclosed', 'cordis.yml')
   expect(profileMcpServers(broken, '').problem).toContain('could not be parsed')
+})
+
+it('finds the profile from a package inside its node_modules, and the plugins installed there', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-extras-'))
+  const write = (parts: string[], manifest: unknown) => {
+    const file = join(root, ...parts)
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, JSON.stringify(manifest))
+  }
+  const pkg = join(root, 'node_modules', '@acme', 'thing')
+  write(['node_modules', '@acme', 'thing', 'package.json'], { name: '@acme/thing', version: '1.2.3', dsh: { bundle: {} } })
+  write(['node_modules', 'plain-plugin', 'package.json'], { name: 'plain-plugin', version: '0.1.0', dsh: { client: {} } })
+  write(['node_modules', 'lodash', 'package.json'], { name: 'lodash', version: '4.0.0' })
+  // The package itself knows which profile it was installed into, which the host does not export.
+  expect(profileFromPath(join(pkg, 'lib'))).toBe(root)
+  const { plugins } = installedPlugins(join(root, 'node_modules'))
+  expect(plugins.map(plugin => plugin.name)).toEqual(['@acme/thing', 'plain-plugin'])
+  expect(plugins[0]).toMatchObject({ version: '1.2.3' })
 })

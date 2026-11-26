@@ -1,5 +1,7 @@
 /** The MCP servers a DSH profile configures, read from the profile's own composition rather than copied into settings. */
 import { readFileSync, readdirSync } from 'node:fs'
+import { basename, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import { parseDocument } from 'yaml'
 
@@ -17,6 +19,26 @@ export function serverTarget(config: Record<string, unknown>): string {
 }
 
 const CLIENT = '@deepseek-ai/dsh-mcp-client'
+
+/**
+ * The profile this package is installed into, found from its own location: `<profile>/node_modules/<scope>/<package>`.
+ * The host does not export `DSH_PROFILE_DIR` to plugins, so the package's own path is the reliable source.
+ * @returns The profile directory, or undefined when the package is not installed under a `node_modules`.
+ */
+export function profileFromPath(start: string): string | undefined {
+  let dir = start
+  for (let steps = 0; steps < 8; steps += 1) {
+    if (basename(dir) === 'node_modules') return dirname(dir)
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return undefined
+}
+
+export function installedProfileDir(): string | undefined {
+  return process.env.DSH_PROFILE_DIR || profileFromPath(dirname(fileURLToPath(import.meta.url)))
+}
 
 /** Collects every mcp-client row of one document, following `insert` lists and named rows alike. */
 function collect(value: unknown, found: Map<string, ProfileMcpServer>, seen: Set<unknown>): void {
@@ -80,8 +102,8 @@ export function installedPlugins(nodeModules: string | undefined): { plugins: In
       if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
       if (entry.name.startsWith('.')) continue
       // A scope holds packages; anything else is one.
-      if (entry.name.startsWith('@') && !prefix) { readDir(join(dir, entry.name), `${entry.name}/`); continue }
-      if (prefix && !entry.name.startsWith('@')) continue
+      // A scope directory holds packages; every other directory under node_modules is one.
+      if (!prefix && entry.name.startsWith('@')) { readDir(join(dir, entry.name), `${entry.name}/`); continue }
       const name = `${prefix}${entry.name}`
       try {
         const manifest = JSON.parse(readFileSync(join(dir, entry.name, 'package.json'), 'utf8')) as

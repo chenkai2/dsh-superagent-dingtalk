@@ -2,7 +2,7 @@
   "name": "@chenkai114/dsh-superagent-dingtalk",
   "author": "chenkai2",
   "license": "MIT",
-  "version": "0.0.20",
+  "version": "0.0.21",
   "description": "DingTalk source for dsh-superagent: reads configured groups through the official dws CLI, receives messages addressed to an application robot over Stream, and replies as a bot.",
   "type": "module",
   "main": "lib/index.js",
