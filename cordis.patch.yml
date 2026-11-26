@@ -85,6 +85,21 @@
           # Mounts the MCP servers the Execution settings name into this Session; the profile keeps their addresses.
           - id: worker-mcp
             name: '@chenkai114/dsh-superagent-dingtalk/worker-mcp'
+          # Reading another Session's progress is ordinary work for an Executor, so it gets the same query tools the
+          # panel has; without them a request about a running session could only be declined.
+          - id: worker-session-search
+            name: cordis:group
+            group: true
+            isolate:
+              sessionQuery: true
+            config:
+              - id: worker-session-query-sqlite
+                name: '@deepseek-ai/dsh-session-query-sqlite'
+                config:
+                  path: ':memory:'
+                  openAt: first-search
+              - id: worker-tool-session-query
+                name: '@deepseek-ai/dsh-tool-session-query'
           - id: compaction
             name: cordis:group
             group: true
