@@ -22,8 +22,10 @@ function versionOf(output: string): string {
 export async function checkDingtalk(commands: Commands, config: DingtalkConfig): Promise<SourceCheck> {
   const items: SourceCheck['items'] = []
   const dws = config.dwsCli?.trim() || 'dws'
+  let dwsOk = false
   try {
     const version = versionOf(await commands.run(dws, ['--version']))
+    dwsOk = true
     items.push({ key: 'dws', ok: true, detail: version ? `${dws} · ${version}` : dws })
   } catch (error) {
     // A missing binary and a refused invocation are both "this CLI is unusable" to the reader; the message says which.
@@ -33,13 +35,22 @@ export async function checkDingtalk(commands: Commands, config: DingtalkConfig):
   items.push(stream
     ? { key: 'stream', ok: true, detail: stream.clientId }
     : { key: 'stream', ok: false, detail: 'Stream robot credentials are incomplete' })
-  const bots = config.bots.filter(bot => bot.token && bot.secret)
-  items.push(bots.length > 0
-    ? { key: 'bots', ok: true, detail: bots.map(bot => bot.name || bot.conversationId).join(', ') }
-    : { key: 'bots', ok: false, detail: 'No group bot has both a token and a secret' })
+  // Signing is optional: a robot the group does not require a signature from needs only its token.
+  const robots = config.bots.filter(bot => bot.token)
+  const botOk = robots.length > 0
+  items.push(botOk
+    ? { key: 'bots', ok: true, detail: robots.map(bot => bot.name || bot.conversationId || 'default').join(', ') }
+    : { key: 'bots', ok: false, detail: 'No group robot has a token' })
   const groups = config.groups.filter(group => group.conversationId)
-  items.push(groups.length > 0
-    ? { key: 'groups', ok: true, detail: `${groups.length}` }
+  const groupsOk = groups.length > 0 || config.otherChats
+  items.push(groupsOk
+    ? { key: 'groups', ok: true, detail: config.groups.length > 0 ? `${groups.length}` : 'other chats' }
     : { key: 'groups', ok: false, detail: 'No group is listened to' })
-  return { ok: items.every(item => item.ok), items }
+  // The transports are alternatives: either one receives. Replies go through a group robot, the callback's own address,
+  // or dws as the application robot, which itself needs that robot's code.
+  // A robot code can be set on its own, without the Stream credentials that read messages.
+  const robotCode = config.streamRobotCode || config.streamClientId
+  const receives = Boolean(stream) || dwsOk
+  const replies = botOk || Boolean(stream) || (dwsOk && Boolean(robotCode))
+  return { ok: receives && replies && groupsOk, items }
 }

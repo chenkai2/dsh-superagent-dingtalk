@@ -159,6 +159,17 @@ it('keeps reporting the remaining checks when dws is missing', async () => {
   expect(result.items[3]).toMatchObject({ key: 'groups', ok: true })
 })
 
+it('accepts the Stream alone, and accepts dws alone only when it can also post as the application robot', async () => {
+  const group = [{ conversationId: 'cid/A' }]
+  const streamOnly = DingtalkConfigSchema.parse({ groups: group, streamClientId: 'id', streamClientSecret: 'secret' })
+  await expect(dingtalkKind.check!(checkingHost(streamOnly))).resolves.toMatchObject({ ok: true })
+  // dws reads and can post as the application robot only when that robot's code is present.
+  const dwsOnly = DingtalkConfigSchema.parse({ groups: group })
+  expect((await dingtalkKind.check!(checkingHost(dwsOnly, 'v1.0.68'))).ok).toBe(false)
+  const dwsWithRobot = DingtalkConfigSchema.parse({ groups: group, streamRobotCode: 'dingabc' })
+  expect((await dingtalkKind.check!(checkingHost(dwsWithRobot, 'v1.0.68'))).ok).toBe(true)
+})
+
 it('posts through the robot that names no group for every conversation that has no robot of its own', async () => {
   const calls: string[] = []
   vi.stubGlobal('fetch', async (url: string) => { calls.push(url); return { ok: true, json: async () => ({ errcode: 0 }) } as Response })

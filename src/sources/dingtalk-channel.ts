@@ -95,7 +95,8 @@ export async function sendDingtalk(host: Pick<SourceContext, 'commands' | 'confi
   }
   // 3. The application robot through dws, which keeps the message signed by a bot.
   const dws = config ? dwsOf(config) : undefined
-  const robotCode = config ? streamOf(config)?.robotCode ?? config.streamClientId : undefined
+  // A robot code stands on its own, so a deployment that only reads through dws can still post as the robot.
+  const robotCode = config ? config.streamRobotCode || config.streamClientId : undefined
   if (dws?.enabled && robotCode) {
     await sendDwsBot(host.commands, dws.cli, robotCode, conversationId, title, text)
     return 'sent'

@@ -9,8 +9,12 @@ import { dingtalkTrigger, type DingtalkMessageInput } from './dingtalk-trigger.t
 import { pause } from './poll.ts'
 import type { SourceContext } from './host.ts'
 
-/** The health entry every part of this Source reports under. */
+/** The health entry that describes whether the Source can work at all. */
 const HEALTH = 'dingtalk'
+/** The `dws` history-and-poll transport's own entry, so its failure leaves Stream receive visible as healthy. */
+const DWS = 'dingtalk-dws'
+/** The Stream long connection's own entry. */
+const STREAM = 'dingtalk-stream'
 
 /**
  * Whether `text` addresses one of the configured robot names. A history read has no structural mention field, so this is
@@ -115,7 +119,7 @@ async function runStream(host: SourceContext, signal: AbortSignal): Promise<void
   const config = host.config<DingtalkConfig>('dingtalk')
   const stream = config ? streamOf(config) : undefined
   if (!config || !stream) {
-    host.report(HEALTH, { state: 'ready', detail: 'Stream robot not configured; reading through dws only' })
+    host.report(STREAM, { state: 'ready', detail: 'Stream robot not configured; reading through dws only' })
     return
   }
   const client = new DingtalkStream(stream, {
@@ -151,16 +155,47 @@ async function runStream(host: SourceContext, signal: AbortSignal): Promise<void
  * @param host The Source context.
  * @param signal Aborts the run, closing the connection.
  */
+/**
+ * Runs one transport for as long as the Source is on, restarting it after a failure.
+ * @param host The DingTalk Source context.
+ * @param signal Stops the transport when the Source stops.
+ * @param entry The health entry this transport reports under.
+ * @param run One run of the transport; a rejection restarts it rather than ending the Source.
+ */
+async function supervise(host: SourceContext, signal: AbortSignal, entry: string,
+  run: () => Promise<void>): Promise<void> {
+  while (!signal.aborted) {
+    try { await run() }
+    catch (error) {
+      if (signal.aborted) return
+      host.report(entry, { state: 'error', detail: `${String(error).slice(0, 300)}; retrying` })
+      await pause(15_000, signal)
+      continue
+    }
+    // A transport that returns without an abort is done; restarting it is the supervisor's job.
+    if (!signal.aborted) await pause(15_000, signal)
+  }
+}
+
 export async function runDingtalk(host: SourceContext, signal: AbortSignal): Promise<void> {
   const config = host.config<DingtalkConfig>('dingtalk')
   if (!config) { host.report(HEALTH, { state: 'ready', detail: 'DingTalk Source is off' }); return }
   const tally = { failures: 0 }
-  const polling = (async () => {
+  const polling = async () => {
+    if (!dwsOf(host.config<DingtalkConfig>('dingtalk') ?? config).enabled) {
+      host.report(DWS, { state: 'ready', detail: 'History reads are off; Stream receive still runs' })
+      await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }))
+      return
+    }
     while (!signal.aborted) {
       const current = host.config<DingtalkConfig>('dingtalk')
       if (current) await pollSafely(host, current, tally)
       await pause((current ? dwsOf(current).pollSeconds : 60) * 1000, signal)
     }
-  })()
-  await Promise.all([polling, runStream(host, signal)])
+  }
+  // Each transport is supervised on its own: losing the Stream must not stop history reads, and the reverse.
+  await Promise.all([
+    supervise(host, signal, DWS, polling),
+    supervise(host, signal, STREAM, () => runStream(host, signal)),
+  ])
 }

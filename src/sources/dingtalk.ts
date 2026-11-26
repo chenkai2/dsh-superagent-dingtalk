@@ -72,7 +72,7 @@ export const dingtalkKind: SourceKind<DingtalkConfig> = {
     { key: 'readPageSize', type: 'number', advanced: true, min: 1, max: 50, label: { zh: '线程上下文每页条数', en: 'Thread context page size' } },
     { key: 'failuresBeforeError', type: 'number', advanced: true, min: 1, max: 20, label: { zh: '连续失败几次后报告异常', en: 'Failed reads before reporting an error' } },
   ],
-  health: ['dingtalk'],
+  health: ['dingtalk', 'dingtalk-dws', 'dingtalk-stream'],
   scope({ meta }, config) {
     if (meta.direct === true) return config.directMessages ? { listened: true, observed: false, row: 'direct' } : { listened: false, reason: 'direct_messages_not_allowed' }
     const group = config.groups.find(item => item.conversationId === meta.conversationId)
