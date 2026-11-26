@@ -2,9 +2,11 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { join } from 'node:path'
 import { z } from 'zod'
 import { THREAD_FILTERS, TICKET_FILTERS, type Api, type ApiResponse, type RouteParams } from './api.ts'
 import { sourceSkills } from './context.ts'
+import { installedPlugins, profileMcpServers, serverTarget } from './mcp-servers.ts'
 import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
 import { PromptConflict, SKILL_NAME, SKILL_PREFIX, TEAM_SECTIONS, builtInBase, builtInParts, defaultPrompts, savePrompts, type Prompts }
   from './prompts.ts'
@@ -159,6 +161,15 @@ function routes(runtime: HttpHost): Routes {
     'GET search': ({ query }) => search(views(runtime), query.q ?? '', runtime.sourceLinks),
     'GET sources': () => sourcesStatus(views(runtime), runtime.health, setupState(runtime)),
     'GET settings': () => settingsView(store, runtime.sources, runtime.health, setupState(runtime), runtime.machine.stateDir),
+    // What the Execution settings can offer instead of asking a person to type module and server names.
+    'GET executor/extras': async () => {
+      const profile = process.env.DSH_PROFILE_DIR
+      const { servers, problem: profileProblem } = profileMcpServers(profile)
+      const { plugins, problem: pluginProblem } = installedPlugins(profile ? join(profile, 'node_modules') : undefined)
+      const problem = profileProblem ?? pluginProblem
+      return { servers: [...servers.values()].map(server => ({ name: server.name, transport: server.transport,
+        target: serverTarget(server.config) })).sort((a, b) => a.name.localeCompare(b.name)), plugins, ...problem ? { problem } : {} }
+    },
     'POST sources/:id/labels': ({ params }) => runtime.settings.refreshLabels(params.id),
     'GET sources/:id/check': async ({ params }) => runtime.settings.check(params.id),
     'GET threads': ({ query }) => {

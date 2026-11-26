@@ -1,10 +1,20 @@
 /** The MCP servers a DSH profile configures, read from the profile's own composition rather than copied into settings. */
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { parseDocument } from 'yaml'
 
 /** One entry a profile mounts, by the name its tools live under. */
 export interface ProfileMcpServer { name: string; transport: 'stdio' | 'streamable-http' | 'sse'; config: Record<string, unknown> }
+
+/** Where a server connects, without the query string that usually carries its key. */
+export function serverTarget(config: Record<string, unknown>): string {
+  if (typeof config.url === 'string') {
+    const url = new URL(config.url)
+    return `${url.host}${url.pathname}`
+  }
+  const command = [config.command, ...Array.isArray(config.args) ? config.args.filter((arg): arg is string => typeof arg === 'string') : []]
+  return command.filter(Boolean).join(' ')
+}
 
 const CLIENT = '@deepseek-ai/dsh-mcp-client'
 
@@ -49,4 +59,39 @@ export function profileMcpServers(profileDir: string | undefined, homeDir = proc
     collect(document.toJS(), servers, new Set())
   }
   return read > 0 ? { servers } : { servers, problem: 'No profile composition file was readable' }
+}
+
+/**
+ * Plugins installed in a profile that can be mounted into an Executor Session, by the names the settings offer.
+ * @param profileDir The profile directory, normally `$DSH_PROFILE_DIR`.
+ * @param nodeModules Its `node_modules`, which is where installed plugins resolve from.
+ * @returns Package names that carry a DSH plugin composition, sorted, and why the directory could not be read.
+ */
+/** One installed plugin, as the settings offer it. */
+export interface InstalledPlugin { name: string; version?: string; description?: string }
+
+export function installedPlugins(nodeModules: string | undefined): { plugins: InstalledPlugin[]; problem?: string } {
+  if (!nodeModules) return { plugins: [], problem: 'This installation does not say where its profile is' }
+  const names: InstalledPlugin[] = []
+  const readDir = (dir: string, prefix = ''): void => {
+    let entries
+    try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const entry of entries) {
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
+      if (entry.name.startsWith('.')) continue
+      // A scope holds packages; anything else is one.
+      if (entry.name.startsWith('@') && !prefix) { readDir(join(dir, entry.name), `${entry.name}/`); continue }
+      if (prefix && !entry.name.startsWith('@')) continue
+      const name = `${prefix}${entry.name}`
+      try {
+        const manifest = JSON.parse(readFileSync(join(dir, entry.name, 'package.json'), 'utf8')) as
+          { dsh?: unknown; version?: string; description?: string }
+        // A DSH plugin declares its composition; an ordinary dependency does not.
+        if (manifest.dsh) names.push({ name, ...manifest.version ? { version: manifest.version } : {},
+          ...manifest.description ? { description: manifest.description } : {} })
+      } catch { /* Not a package, or one without a readable manifest. */ }
+    }
+  }
+  readDir(nodeModules)
+  return { plugins: names.sort((a, b) => a.name.localeCompare(b.name)) }
 }

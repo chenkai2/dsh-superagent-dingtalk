@@ -25,6 +25,11 @@ export interface Api {
   'GET search': { query: { q: string }; response: SearchView }
   'GET sources': { response: SourceStatusView[] }
   'GET settings': { response: SettingsView }
+  /** What the Execution settings can offer by name, without a person typing module names. */
+  'GET executor/extras': { response: {
+    servers: { name: string; transport: string; target: string }[]
+    plugins: { name: string; version?: string; description?: string }[]
+    problem?: string } }
   'POST sources/:id/labels': { response: { added: string[] } }
   'GET sources/:id/check': { response: SourceCheck }
   'GET threads': { query?: Paged & { filter?: ThreadFilter }; response: ThreadListView }

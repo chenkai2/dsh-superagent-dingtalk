@@ -73,13 +73,20 @@ function EnvironmentVariables({ groups, sources,
   </DisclosureRow>
 }
 export function ExecutionSettings() {
-  const { t } = usePanel()
+  const { t, call } = usePanel()
   const { blocks, environment, sources } = useSettings().settings
+  // The lists come from the profile, so nobody has to type a module name or a server name correctly.
+  const { data: extras } = usePoll(() => call('GET executor/extras'), [])
+  const choices = {
+    plugins: (extras?.plugins ?? []).map(plugin => ({ value: plugin.name,
+      detail: [plugin.version, plugin.description].filter(Boolean).join(' · ') })),
+    servers: (extras?.servers ?? []).map(server => ({ value: server.name, detail: `${server.transport} · ${server.target}` })),
+  }
   // Keep raw user text (such as separators between blocked commands) in the draft and parse only on save.
   const executor = blocks.executor.value
-  const saved = { ...executor, maxWorkers: String(executor.maxWorkers), blockedCommands: executor.blockedCommands.join(' '), workerMcp: executor.workerMcp.join(' '), workerPlugins: executor.workerPlugins.join(' ') }
+  const saved = { ...executor, maxWorkers: String(executor.maxWorkers), blockedCommands: executor.blockedCommands.join(' '), workerMcp: executor.workerMcp, workerPlugins: executor.workerPlugins }
   const draft = useBlockDraft('executor', saved, blocks.executor.revision,
-    value => ({ ...value, maxWorkers: numberOf(value.maxWorkers), blockedCommands: value.blockedCommands.split(/[\s,]+/).filter(Boolean), workerMcp: value.workerMcp.split(/[\s,]+/).filter(Boolean), workerPlugins: value.workerPlugins.split(/[\s,]+/).filter(Boolean) }))
+    value => ({ ...value, maxWorkers: numberOf(value.maxWorkers), blockedCommands: value.blockedCommands.split(/[\s,]+/).filter(Boolean), workerMcp: value.workerMcp, workerPlugins: value.workerPlugins }))
   const value = draft.value
   const edit = (next: Partial<typeof value>) => draft.edit({ ...value, ...next })
   const prepare = useRef<HTMLTextAreaElement>(null)
@@ -115,12 +122,12 @@ export function ExecutionSettings() {
           </Field>
           <EnvironmentVariables groups={environment.variables} sources={sources} onPick={insert} />
           <Field label={t('workerPlugins')} hint={t('workerPluginsHint')}>
-            <Input className="dt-mono" value={value.workerPlugins} placeholder={t('workerMcpNone')} spellCheck={false}
-              onChange={event => edit({ workerPlugins: event.target.value })} />
+            <PickList label={t('workerPlugins')} options={choices.plugins} value={value.workerPlugins}
+              empty={t('extrasNone')} onChange={next => edit({ workerPlugins: next })} />
           </Field>
           <Field label={t('workerMcp')} hint={t('workerMcpHint')}>
-            <Input className="dt-mono" value={value.workerMcp} placeholder={t('workerMcpNone')} spellCheck={false}
-              onChange={event => edit({ workerMcp: event.target.value })} />
+            <PickList label={t('workerMcp')} options={choices.servers} value={value.workerMcp}
+              empty={t('extrasNone')} onChange={next => edit({ workerMcp: next })} />
           </Field>
           <Field label={t('blockedCommands')} hint={t('blockedCommandsHint')}>
             <Input className="dt-mono" value={value.blockedCommands} placeholder={t('blockedCommandsNone')} spellCheck={false}
@@ -131,5 +138,36 @@ export function ExecutionSettings() {
       <SaveBar {...draft} onDiscard={draft.discard} />
     </form>
     <ConfigHistory blocks={['executor', 'pause']} />
+  </div>
+}
+
+/**
+ * A checkbox per choice, with a select-all row. A value the profile no longer offers stays listed and selected, so a
+ * setting is never silently dropped because what it named disappeared.
+ */
+function PickList({ label, options, value, empty, onChange }: {
+  label: string; options: { value: string; detail?: string }[]; value: string[]; empty: string
+  onChange: (next: string[]) => void
+}) {
+  const names = options.map(option => option.value)
+  const shown: { value: string; detail?: string }[] = [...options,
+    ...value.filter(item => !names.includes(item)).map(item => ({ value: item }))]
+    .sort((a, b) => a.value.localeCompare(b.value))
+  if (!shown.length) return <span className="dt-hint">{empty}</span>
+  const all = shown.every(item => value.includes(item.value))
+  const toggle = (item: string) => onChange(value.includes(item) ? value.filter(other => other !== item) : [...value, item])
+  return <div className="dt-picklist">
+    <label className="dt-check">
+      <input type="checkbox" checked={all} aria-label={`${label} · 全选`} onChange={() => onChange(all ? [] : shown.map(item => item.value))} />
+      <span>全选</span>
+    </label>
+    {shown.map(item => <label key={item.value} className="dt-check">
+      <input type="checkbox" checked={value.includes(item.value)} aria-label={`${label} · ${item.value}`}
+        onChange={() => toggle(item.value)} />
+      <span>
+        <span className="dt-mono">{item.value}</span>
+        {item.detail && <small className="dt-picklist-detail">{item.detail}</small>}
+      </span>
+    </label>)}
   </div>
 }
