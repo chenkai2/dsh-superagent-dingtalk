@@ -54,9 +54,13 @@ export class Intake extends EnginePart {
     // it opens a ticket or belongs to one already running. Only unaddressed messages join a thread's tickets on arrival,
     // which is what makes the discussion around a ticket stay with that ticket instead of opening one per remark.
     const explicit = trigger.addressed !== undefined && filter.fresh === true
+    // A ticket that asked this person something is waiting for exactly this reply, so an unaddressed answer belongs to it
+    // whether or not the thread holds other tickets: a person answers the question in front of them, not a routing problem.
+    const waiting = trigger.human ? [...reached].filter(([, entry]) => entry.ticket.attention !== undefined) : []
+    const answers = waiting.length === 1 ? waiting[0]![0] : undefined
     // One ticket following the thread is exact. More than one makes the message ambiguous, and delivering it to all of them
     // makes every worker decide whether it is theirs; the assessment decides instead, and can tell which one it belongs to.
-    const ambiguous = filter.fresh === true && reached.size > 1
+    const ambiguous = answers === undefined && filter.fresh === true && reached.size > 1
     if (!explicit && !ambiguous) for (const [ticketId, { ticket, context: followed }] of reached) {
       this.tickets.addInput(ticket, { id: key('input', ticketId, 'trigger', trigger.id), kind: 'trigger', triggerId: trigger.id, at,
         ...trigger.human ? { human: true } : {}, ...followed ? { context: true } : {} })
