@@ -61,11 +61,13 @@ export class Intake extends EnginePart {
     // One ticket following the thread is exact. More than one makes the message ambiguous, and delivering it to all of them
     // makes every worker decide whether it is theirs; the assessment decides instead, and can tell which one it belongs to.
     const ambiguous = answers === undefined && filter.fresh === true && reached.size > 1
-    if (!explicit && !ambiguous) for (const [ticketId, { ticket, context: followed }] of reached) {
+    // An answer goes to the ticket that asked and to no other, so a second ticket following the group does not also read it.
+    const targets = answers === undefined ? reached : new Map([[answers, reached.get(answers)!]])
+    if (!explicit && !ambiguous) for (const [ticketId, { ticket, context: followed }] of targets) {
       this.tickets.addInput(ticket, { id: key('input', ticketId, 'trigger', trigger.id), kind: 'trigger', triggerId: trigger.id, at,
         ...trigger.human ? { human: true } : {}, ...followed ? { context: true } : {} })
     }
-    const fanout = explicit || ambiguous ? [] : [...reached.keys()]
+    const fanout = explicit || ambiguous ? [] : [...targets.keys()]
     const context = fanout.filter(id => reached.get(id)!.context)
     const disposition = { fanout, ...context.length ? { context } : {}, ...(explicit || ambiguous) && reached.size ? { deferred: [...reached.keys()] } : {}, at }
     this.repo.triggers.saveDisposition(trigger.id, disposition)

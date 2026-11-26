@@ -152,6 +152,18 @@ describe('eval', () => {
     expect(h.repo.triggers.disposition('2')?.fanout).toEqual([])
     expect(h.requests).toHaveLength(2)
   })
+  it('gives an unaddressed answer to the ticket that asked, even when another ticket follows the same group', async () => {
+    const h = harness({}, { fresh: true })
+    const asked = accepted(h, '1', 't1')
+    // A second addressed request opens a second ticket on the same conversation, which makes a remark ambiguous.
+    h.engine.receive({ ...trigger('2'), addressed: 'mention' }); h.pump()
+    h.decide(h.requests.at(-1)!, { kind: 'accept', title: 'Second', scope: 'small', reason: 'requested', acknowledgement: 'ok' })
+    // The first ticket asks this person a question, so the reply belongs to it rather than to an assessment.
+    h.engine.report(asked.ticketId!, { state: 'blocked', summary: 'need the page', question: 'Which page?' })
+    h.engine.receive({ ...trigger('3', { human: true }), addressed: undefined }); h.pump()
+    expect(h.repo.triggers.disposition('3')?.fanout).toEqual([asked.ticketId])
+    expect(h.repo.tickets.get(asked.ticketId!)!.inputs.at(-1)).toMatchObject({ kind: 'trigger', triggerId: '3' })
+  })
   it('asks which ticket an unaddressed remark belongs to once a command group has more than one', async () => {
     const h = harness({}, { fresh: true })
     // Two tickets follow the same group, so a remark that names neither cannot be delivered to both on guesswork.
