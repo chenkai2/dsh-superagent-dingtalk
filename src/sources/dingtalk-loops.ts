@@ -3,6 +3,7 @@ import { KV } from '../kv.ts'
 import { dwsOf, streamOf, type DingtalkConfig } from './dingtalk-config.ts'
 import { readDwsPage } from './dingtalk-dws.ts'
 import { DingtalkStream } from './dingtalk-stream.ts'
+import { enrolGroup, enrolmentCommand, replyTo } from './dingtalk-enrol.ts'
 import { rememberGroup } from './dingtalk-groups.ts'
 import { dingtalkTrigger, type DingtalkMessageInput } from './dingtalk-trigger.ts'
 import { pause } from './poll.ts'
@@ -123,6 +124,12 @@ async function runStream(host: SourceContext, signal: AbortSignal): Promise<void
       if (!current) return
       // Learn the group from the message itself: this needs no dws, and names the picker without a history read.
       rememberGroup(host, input.conversationId, input.conversationTitle)
+      // Enrolment needs a person who may originate work: the group it records is then read as the operator.
+      if (!input.direct && input.human && host.mayOriginate(input.senderId) && enrolmentCommand(input.text)) {
+        try { replyTo(host, input, await enrolGroup(host, current, input)) }
+        catch (error) { host.report(HEALTH, { state: 'error', detail: `Could not enrol this group: ${String(error).slice(0, 200)}` }) }
+        return
+      }
       if (!listensTo(current, input.conversationId, input.direct)) return
       const trigger = dingtalkTrigger({ ...input, robotCode })
       if (trigger) await host.receive(trigger)

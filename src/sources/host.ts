@@ -61,6 +61,10 @@ export interface SourceContext {
   }
   triggers: { get(id: string): Trigger | undefined; /** The newest Trigger on a Thread. */ latest(thread: string): Trigger | undefined }
   notify(message: OutboundMessage): void
+  /** Whether a platform user may originate work, from this Source's Policy part. */
+  mayOriginate(senderId: string): boolean
+  /** Saves this Source's own configuration; a Source that enrolls itself from a control command writes it here. */
+  updateConfig(id: string, update: (config: Record<string, unknown>) => Record<string, unknown>): Promise<void>
   /** Reports the state of one of this kind's declared health entries; throws for undeclared entry names. */
   report(entry: string, health: Health): void
 }

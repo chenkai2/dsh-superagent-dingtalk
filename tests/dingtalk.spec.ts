@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { sendDingtalk } from '../src/sources/dingtalk-channel.ts'
 import { DingtalkConfigSchema } from '../src/sources/dingtalk-config.ts'
 import { dingtalkKind } from '../src/sources/dingtalk.ts'
+import { enrolGroup, enrolmentCommand } from '../src/sources/dingtalk-enrol.ts'
 import { rememberGroup } from '../src/sources/dingtalk-groups.ts'
 import { addressedTo, ingestible, readFrom } from '../src/sources/dingtalk-loops.ts'
 import { StreamMessageSchema, dingtalkChannel, dingtalkTime, dingtalkTrigger, dingtalkTriggerId, streamText }
@@ -182,4 +183,30 @@ it('learns a group name from a message addressed to the app robot, without readi
   // A direct message carries no title, and a repeated title writes nothing.
   rememberGroup(ctx, 'cid/B', undefined)
   expect(stored).toHaveLength(1)
+})
+
+it('takes the enrolment command out of a message that begins with mentions', () => {
+  expect(enrolmentCommand('@小钉 启用')).toBe('enable')
+  expect(enrolmentCommand('@小钉   Enable.')).toBe('enable')
+  expect(enrolmentCommand('启用')).toBe('enable')
+  // Ordinary work that merely starts with a mention is not an enrolment.
+  expect(enrolmentCommand('@小钉 统计一下 /tmp 有多少文件')).toBeUndefined()
+  expect(enrolmentCommand('@小钉 不要启用')).toBeUndefined()
+})
+
+it('records the group a command came from, and answers once when it is already recorded', async () => {
+  const saved: Record<string, unknown>[] = []
+  const ctx = {
+    updateConfig: async (_id: string, update: (config: Record<string, unknown>) => Record<string, unknown>) => {
+      saved.push(update({ groups: [], bots: [] }))
+    },
+  } as unknown as SourceContext
+  const input = { messageId: 'm1', conversationId: 'cid/A', at: '2026-11-26 10:00:00', text: '@小钉 启用', senderId: 'DXiPuser',
+    human: true, direct: false, mentioned: true, conversationTitle: '电商 告警通知群' }
+  const config = DingtalkConfigSchema.parse({})
+  await expect(enrolGroup(ctx, config, input)).resolves.toContain('电商 告警通知群')
+  expect(saved[0]).toMatchObject({ groups: [{ conversationId: 'cid/A', name: '电商 告警通知群', listen: 'mentions' }] })
+  const known = DingtalkConfigSchema.parse({ groups: [{ conversationId: 'cid/A', listen: 'all' }] })
+  await expect(enrolGroup(ctx, known, input)).resolves.toContain('全部消息')
+  expect(saved).toHaveLength(1)
 })

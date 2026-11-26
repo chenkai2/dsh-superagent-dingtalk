@@ -22,6 +22,8 @@ export interface SourceContextDeps {
   readonly setupProblem?: SetupProblem | undefined
   /** Why setup found no Feishu bot even though the Feishu Source names a CLI. */
   readonly feishuProblem?: SetupProblem | undefined
+  /** Saves one Source's configuration, preserving whether it is enabled. */
+  saveSourceConfig(id: string, config: Record<string, unknown>): Promise<void>
   /** Hands a Trigger to the Engine and schedules the pass that assesses it. */
   receive(trigger: Trigger): ReceiveResult | Promise<ReceiveResult>
 }
@@ -64,6 +66,15 @@ export function sourceContextOf(deps: SourceContextDeps, kind: { kind: string; h
     },
     triggers: { get: id => store.triggers.get(id), latest: thread => store.read.threadTriggers(thread, 1)[0] },
     notify: message => { deps.outbox.send(message) },
+    mayOriginate: senderId => {
+      const part = deps.sources.policyPart(kind.kind) as { allowed?: { id: string }[] } | undefined
+      return !!part?.allowed?.some(user => user.id === senderId)
+    },
+    updateConfig: async (id, update) => {
+      const instance = deps.sources.instance(id)
+      if (!instance) throw new Error(`The ${id} Source is not installed`)
+      await deps.saveSourceConfig(id, update(instance.config))
+    },
     report: (entry, value) => {
       if (!kind.health.includes(entry)) throw new Error(`The ${kind.kind} Source has no health entry ${entry}`)
       health.get(entry)?.set(value)
