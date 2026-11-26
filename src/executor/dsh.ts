@@ -136,14 +136,15 @@ const RESUMED = 'This ticket ended earlier and the message that follows, on its 
 const RETRIED = 'A person retried this ticket. Continue the assignment from the current worktree, git history and PR state.'
 /**
  * The notice a person reads in the conversation their ticket started in, in the language of the message that started it:
- * Chinese unless it is Japanese, as pull-end notices decide. It names the interruption, which no result will ever explain,
- * and the message that continues the ticket, since a stopped plugin may never start the queued work.
+ * Chinese unless it is Japanese, as pull-end notices decide. It names the interruption no result will explain, says the
+ * queued work continues on the next start, and how to stop it, so neither is left to guesswork. It promises no delivery
+ * time: a stop stops the effect queue before the Executor, so the notice leaves with the next start.
  */
 function stoppedNotice(request: string): string {
   const chinese = /\p{Script=Han}/u.test(request) && !/[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(request)
   return chinese
-    ? '这条工单被中断了：dsh-superagent 在它跑完之前停止，这次没有产出结果。如果还要继续，把需求再发一次。'
-    : 'This ticket was interrupted: dsh-superagent stopped before its worker finished, so this run has no result. Send the request again to continue it.'
+    ? '这条工单被主机重启打断：本次没有产出结果。重启后会自动继续；如果你不希望继续，回一句取消即可。'
+    : 'This ticket was interrupted by the host restart: this run produced no result. The work continues automatically after the restart; reply cancel if you do not want it to.'
 }
 /** Formats a policy-change input for the worker; inputs recorded before `effect` existed fall back to a general notice. */
 function policyMessage(effect?: PolicyEffect): string {

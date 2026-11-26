@@ -1693,7 +1693,7 @@ describe('a stop with work in progress', () => {
     expect(stopped.assignments[0]).toMatchObject({ endedReason: 'hostRestarted' })
     expect(stopped.inputs).toEqual([expect.objectContaining({ kind: 'text', text: expect.stringContaining('host restarted') })])
     expect(runtime.store.receipts.get(id)).toMatchObject({ status: 'pending', kind: 'notice', ticketId: ticket.id,
-      channel: trigger.channel, text: expect.stringContaining('把需求再发一次') })
+      channel: trigger.channel, text: expect.stringContaining('自动继续') })
     expect(outboxRows(runtime, id)).toBe(1)
     // The next start sends the queued notice and launches the replacement Assignment, without telling the person again.
     const next = await restart()

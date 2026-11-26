@@ -44,6 +44,8 @@ When an Assignment ends, its shell jobs are killed without waking the Session. I
 
 Stopping or restarting the plugin inside the DeepSeek Harness process uses the same shutdown path. Inputs not yet taken into Session history are retained. Shutdown waits up to 10 seconds for each worker's background work; a process restart ends that work outright. An Assignment interrupted while busy restarts with a recovery note.
 
+A stop marks each Assignment whose worker was still on it as interrupted, the way a restart does, and queues one notice in the conversation its Ticket started in: the run was interrupted with no result, the work continues after the restart, and a reply cancels it. The notice waits in the outbox and leaves with the next start, because a stop stops the effect queue before the Executor. An Assignment the worker had handed to a person, with a result, a question or a report that waits, is left as it is: the person owes the next move.
+
 Worker subagents, including nested ones, use DeepSeek Harness's `standard` preset with the worker's permissions. They retain only the worker's allowed work tools, and lose those tools when the Ticket ends. Under `standard`, a shell command moves to the background after 60 seconds. A subagent's jobs are killed when it ends.
 
 ### Preparing a Ticket directory
@@ -146,6 +148,8 @@ The Executor model applies only when a Session is created; an existing Session k
 Running Assignments end with "host restarted" and new ones start with a recovery note that tells the Executor to check its directory, git history and GitHub before repeating any outside action, oldest Ticket first.
 
 Assignments that are waiting, ready, blocked or failed stay as they are, unless an Input reached them after that Report, in which case they start again too.
+
+A Ticket whose worker asked a question and then went quiet asks it again after a restart, where the message that raised it was written: the question is part of what the worker produced, so a restart that keeps its Session sends it rather than restarting the Assignment. Its id belongs to the question, so a restart reaches the person once however often the plugin starts, and a later answer keeps its place in that conversation.
 
 Sessions, directories, Subscriptions, pending messages and the stored work below survive a restart, and so does the record of which messages each Executor Session took into its history, which a step does once it claimed them and before its model call: a message taken by a turn the restart cut off counts as read once a Report or the end of a turn follows, while one a step claimed but a cancel or error cut off before the history counts as unread.
 
