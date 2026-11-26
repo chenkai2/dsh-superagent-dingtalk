@@ -73,11 +73,15 @@ export function redactMountReason(reason: string): string {
   const redacted = reason
     // `https://user:pass@host/…` names the credential before the host.
     .replace(/(\b[a-z][\w+.-]*:\/\/)[^\s/@]+@/giu, '$1…@')
+    // A gateway often carries its key as a long path segment; one that is long, opaque and has a digit is one.
+    .replace(/(\bhttps?:\/\/[^\s"'?#]+)\/(?=[A-Za-z0-9_-]{24,})(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]+/gu, '$1/…')
     .replace(/(\bhttps?:\/\/[^\s?#"']+)\?[^\s"']*/gu, '$1?…')
     .replace(/(\bhttps?:\/\/[^\s?#"']+)#[^\s"']*/gu, '$1#…')
     .replace(/(\bAuthorization\s*:\s*(?:Bearer|Basic|Token)?\s*)[^\s"',;}]+/giu, '$1…')
-    .replace(/(--(?:api[-_]?key|token|secret|password)\s+)[^\s"',;]+/giu, '$1…')
-    .replace(/(\b(?:api[-_]?key|access[-_]?token|token|secret|password)\s*[=:]\s*)[^\s"',;&]+/giu, '$1…')
+    .replace(/(--(?:api[-_]?key|token|secret|password)\s+)[^\s"',;}]+/giu, '$1…')
+    // `key=value` and JSON `"key":"value"`: quotes are optional on both sides, and only a credential-shaped value (long
+    // and carrying a digit) is replaced, so a message such as `headers.token: expected string` keeps its words.
+    .replace(/(\b["']?(?:api[-_]?key|access[-_]?token|token|secret|password)["']?\s*[=:]\s*["']?)(?=[^\s"',;&}]*\d)[A-Za-z0-9_\-./+=]{8,}/giu, '$1…')
     .trim()
   return redacted.length > MAX_REASON ? `${redacted.slice(0, MAX_REASON - 1)}…` : redacted
 }

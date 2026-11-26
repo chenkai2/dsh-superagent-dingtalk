@@ -47,9 +47,10 @@ it('words the reasons agents read in the glossary\'s words: a sender on the list
 })
 
 it('words every mount failure the host records, in both languages', () => {
-  // A code without words would reach the panel as a bare key, which reads as a broken page.
-  const codes: WorkerMountFailureCode[] = ['not-installed', 'not-configured', 'refused', 'profile-unreadable', 'command-missing',
-    'unavailable']
-  expect(codes.filter(code => !zh[`mountFailure.${code}` as DshSuperagentKey]
+  // A code without words would reach the panel as a bare key, which reads as a broken page. The map is total, so a code
+  // added to the union without a case here is a compile error rather than a missing translation.
+  const codes: Record<WorkerMountFailureCode, true> = { 'not-installed': true, 'not-configured': true, refused: true,
+    'profile-unreadable': true, 'command-missing': true, unavailable: true }
+  expect(Object.keys(codes).filter(code => !zh[`mountFailure.${code}` as DshSuperagentKey]
     || !en[`mountFailure.${code}` as DshSuperagentKey])).toEqual([])
 })

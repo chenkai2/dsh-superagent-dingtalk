@@ -165,8 +165,12 @@ function modulePlugin(): string {
 interface AgentOptions {
   /** Tools the worker's scope resolves after activation, by the names the model sees. */
   tools?: string[]
+  /** Whether the composition has a tool registry at all. */
+  toolsService?: boolean
   /** What the mounted server's activation does: resolve (with or without tools) or reject. */
   activation?: () => Promise<void>
+  /** Whether registering a prompt section throws, as an upstream prompt-order rename would make it. */
+  sectionsThrow?: boolean
 }
 
 /** An agent context that records what was mounted into it and what prompt sections it was given. */
@@ -174,13 +178,25 @@ function recordingAgent(options: AgentOptions = {}) {
   const plugins: { plugin: unknown; config?: unknown }[] = []
   const sections: { name: string; text: string }[] = []
   const systemPrompt = { getSectionOrder: () => 640,
-    section: (definition: { name: string; text: string }) => { sections.push(definition); return () => {} } }
+    section: (definition: { name: string; text: string }) => {
+      if (options.sectionsThrow) throw new TypeError('prompt section order must be a finite number')
+      sections.push(definition)
+      return () => {}
+    } }
   const tools = { schemas: () => (options.tools ?? []).map(name => ({ name })) }
   const activation = options.activation ?? (async () => {})
   const ctx = {
     systemPrompt,
-    inject: (_deps: string[], callback: (inner: { systemPrompt: typeof systemPrompt }) => void) => callback({ systemPrompt }),
-    get: (name: string) => name === 'systemPrompt' ? systemPrompt : name === 'tools' ? tools : undefined,
+    // `inject` itself returns a thenable whose settlement follows the callback, and it calls back after a microtask: the
+    // delayed callback is what makes a throwing registration a rejection of that thenable rather than of a promise that
+    // was never associated with it.
+    inject: async (_deps: string[], callback: (inner: { systemPrompt: typeof systemPrompt }) => void) => {
+      await Promise.resolve()
+      callback({ systemPrompt })
+      return undefined
+    },
+    get: (name: string) => name === 'systemPrompt' ? systemPrompt
+      : name === 'tools' && options.toolsService !== false ? tools : undefined,
     plugin: (plugin: unknown, config?: unknown) => {
       plugins.push({ plugin, config })
       return { await: activation, dispose: async () => {} }
@@ -225,7 +241,9 @@ it('resolves the profile through the package location, never through DSH_PROFILE
   // lists servers. A source checkout has no node_modules ancestor to derive the profile from, so the guard is on the code
   // that decides, next to the tests that hold the behaviour of the resolved directory.
   const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'executor', 'worker-mcp.ts'), 'utf8')
-  expect(source).toContain('installedProfileDir()')
+  // Pinned to the call that does the resolving: keeping the import while reading the variable again would still pass a
+  // plain `toContain`.
+  expect(source).toMatch(/profileMcpServers\(\s*installedProfileDir\(\)\s*\)/)
   expect(source).not.toContain('process.env.DSH_PROFILE_DIR')
 })
 
@@ -290,6 +308,21 @@ it('reports a server that mounted but never registered a tool, and one whose act
   const refusing = recordingAgent({ activation: async () => { throw new Error('transport closed') } })
   await start(selection(['rejected'], []), refusing)
   expect(workerMountFailures()).toMatchObject([{ kind: 'mcp', name: 'rejected', code: 'refused', reason: 'Error: transport closed' }])
+})
+
+it('says nothing about tools when the composition has no tool registry, which is not a failed connection', async () => {
+  workerProfile([{ name: 'dbx' }])
+  const agent = recordingAgent({ toolsService: false })
+  await start(selection(['dbx'], []), agent)
+  expect(workerMountFailures()).toEqual([])
+})
+
+it('rejects instead of hanging when a prompt section cannot be registered', async () => {
+  // `agent/created` is a serial dispatch: a promise that never settles would hold the Session forever, with no error, no
+  // record and no log. A missing prompt-order constant has to surface as this rejection.
+  workerProfile()
+  const agent = recordingAgent({ sectionsThrow: true })
+  await expect(start(selection([], []), agent)).rejects.toThrow('order must be a finite number')
 })
 
 it('keeps the prompt honest: a mounted server keeps its own section, and the resource section only goes when nothing mounted',
@@ -372,6 +405,14 @@ it('keeps a credential out of a recorded reason without cutting the JSON that na
   expect(redactMountReason('headers: {Authorization: Bearer abc.def}')).toBe('headers: {Authorization: Bearer …}')
   expect(redactMountReason('command dbx-cli --api-key sk-live-1 failed')).toBe('command dbx-cli --api-key … failed')
   expect(redactMountReason('env API_KEY=sk-live-2 is unset')).toBe('env API_KEY=… is unset')
+  // The JSON forms put a quote between the name and the separator, and a header name may carry a prefix.
+  expect(redactMountReason('{"token":"sk-live-4"}')).toBe('{"token":"…"}')
+  expect(redactMountReason('{"X-Api-Key": "sk-live-5"}')).toBe('{"X-Api-Key": "…"}')
+  // A gateway that puts its key in the path is the usual shape for a streamable-http row.
+  expect(redactMountReason('GET https://mcp-gw.example.com/server/5271ad46982c202dd6d9a7e3eccca0dce?key=abc'))
+    .toBe('GET https://mcp-gw.example.com/server/…?…')
+  // A value that only looks like a word is not a credential: a validation message keeps its words.
+  expect(redactMountReason('headers.token: expected string')).toBe('headers.token: expected string')
 })
 
 it('logs the same redacted reason it records, so the log cannot leak what the panel hides', async () => {

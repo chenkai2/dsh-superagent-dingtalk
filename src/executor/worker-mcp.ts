@@ -20,9 +20,10 @@ declare module '@deepseek-ai/cordis' {
 }
 
 export const name = 'superagent-worker-mcp'
-// `systemPrompt` is declared because the prompt alignment registers sections through `agent.ctx`; a property read there
-// is refused for a service the plugin does not inject.
-export const inject = ['agents', 'superagentWorkerMcp', 'systemPrompt']
+// `systemPrompt` is deliberately not declared here: a plugin that injects it would not activate at all when a composition
+// lacks one, and then neither a plugin nor an MCP server would mount, silently. The alignment below injects it where it is
+// used, so a missing prompt costs the shadowing and nothing else.
+export const inject = ['agents', 'superagentWorkerMcp']
 
 /** The section every MCP server's instructions and the shared resource tools are rendered under. */
 const RESOURCE_SECTION = 'mcp-resource-servers'
@@ -46,19 +47,19 @@ function inheritedMcpSections(servers: Iterable<string>, mounted: ReadonlySet<st
 
 /**
  * Shadow inherited MCP text the worker cannot act on. A nearer registration of the same section name wins, and `inject`
- * on the worker's own context is what puts this registration in its scope, so the main Session keeps its text. The
- * callback runs a microtask after `inject` is called, and the awaited promise is what makes "shadowed before the next
- * assembly" a guarantee rather than a coincidence of listener order.
+ * on the worker's own context is what puts this registration in its scope, so the main Session keeps its text.
+ *
+ * Awaiting the fiber is what makes "shadowed before the next assembly" a guarantee rather than a coincidence of listener
+ * order, and what `inject` itself returns is a thenable: a callback that throws rejects it. A hand-written promise around
+ * the callback would stay pending forever on that throw, and `agent/created` is a serial dispatch, so the Session would
+ * never start and nothing would say why.
  */
 async function alignPrompt(agent: { ctx: Context }, mounted: ReadonlySet<string>, servers: Iterable<string>): Promise<void> {
   const sections = inheritedMcpSections(servers, mounted)
-  await new Promise<void>(resolve => {
-    agent.ctx.inject(['systemPrompt'], inner => {
-      const prompt = inner.systemPrompt
-      const order = prompt.getSectionOrder('MCP_SERVERS')
-      for (const name of sections) prompt.section({ name, order, text: '', interpolate: false })
-      resolve()
-    })
+  await agent.ctx.inject(['systemPrompt'], inner => {
+    const prompt = inner.systemPrompt
+    const order = prompt.getSectionOrder('MCP_SERVERS')
+    for (const name of sections) prompt.section({ name, order, text: '', interpolate: false })
   })
 }
 
@@ -105,16 +106,20 @@ async function observeActivation(ctx: Context, agent: { ctx: Context }, name: st
   const fail = reporter(ctx, 'mcp', name)
   try {
     await fiber.await()
+    const tools = agent.ctx.get('tools')
+    // A composition without a tool registry cannot answer the question, which is not the same fact as a connection that
+    // registered nothing; only the second one is a failure to report.
+    if (!tools) return
+    if (tools.schemas(scopeOf(agent.ctx)).some(tool => tool.name.startsWith(`mcp__${name}__`))) {
+      clearWorkerMountFailure('mcp', name)
+      return
+    }
+    fail('unavailable', `the connection registered no mcp__${name}__ tool`)
   } catch (error) {
+    // A watcher runs detached from the listener that started it, so its own failures must end here: an escaped rejection
+    // would be swallowed by `allSettled` and leave nothing behind.
     fail('refused', String(error))
-    return
   }
-  const tools = agent.ctx.get('tools')?.schemas(scopeOf(agent.ctx)) ?? []
-  if (tools.some(tool => tool.name.startsWith(`mcp__${name}__`))) {
-    clearWorkerMountFailure('mcp', name)
-    return
-  }
-  fail('unavailable', `the connection registered no mcp__${name}__ tool`)
 }
 
 /** Mount one MCP server's client into the starting Agent from the profile's own row, recording what went wrong. */
@@ -126,7 +131,7 @@ async function mountServer(ctx: Context, agent: { ctx: Context }, name: string, 
   if (!server) return fail('not-configured', `the profile no longer configures ${name}`)
   // A stdio command that is gone fails inside the client after a spawn attempt, and the row is already marked as such in
   // the settings; recording it here is what turns that silent failure into a line a person reads.
-  if (commandMissing(server.config)) return fail('command-missing', `${String(server.config.command)} is not on this machine`)
+  if (commandMissing(server.config)) return fail('command-missing', `${String(server.config.command)} is not on the Host's PATH`)
   let fiber: Fiber
   try {
     // The row comes from a YAML file, so the client's own schema is what turns it into a config it accepts.
