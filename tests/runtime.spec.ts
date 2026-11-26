@@ -1700,9 +1700,42 @@ describe('a stop with work in progress', () => {
     // The Source kinds are normally registered by plugins, which unit tests stand in for before the start finishes.
     next.sources.register(feishuKind); next.sources.register(githubKind)
     await next.ready; await next.sendReplies()
+    // The queued launch runs too, so the work really continues by itself rather than only the notice going out.
+    await next.effects.idle()
     expect(next.store.receipts.get(id)).toMatchObject({ status: 'sent' })
-    expect(next.store.tickets.get(ticket.id)!.assignments.map(item => item.state)).toEqual(['ended', expect.stringMatching(/^(pending|running)$/)])
+    expect(next.store.tickets.get(ticket.id)!.assignments.map(item => item.state)).toEqual(['ended', 'running'])
     expect(outboxRows(next, id)).toBe(1)
+  })
+  it('marks a worker that reported progress with a question as interrupted, and asks that question again', async () => {
+    const { ticket, trigger, sessionId } = await acceptedTicket()
+    await runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: '改到一半', human_action: '要不要连桌面端一起改？' })
+    const asked = runtime.store.tickets.get(ticket.id)!.attention!
+    const reply = key('attention-reply', asked.id)
+    const notice = key('interrupted', ticket.id, runtime.store.tickets.get(ticket.id)!.assignments.at(-1)!.id)
+    expect(runtime.store.receipts.get(reply)).toBeUndefined()
+    await runtime.effects.drain()
+    await runtime.executor.shutdown()
+    const stopped = runtime.store.tickets.get(ticket.id)!
+    // A question is not only a result of a finished turn: a replacement Assignment starts over and would never send it.
+    expect(stopped.assignments.map(item => item.state)).toEqual(['ended', 'pending'])
+    expect(stopped.assignments[0]).toMatchObject({ report: { state: 'progress' } })
+    expect(stopped.attention).toMatchObject({ id: asked.id, question: '要不要连桌面端一起改？' })
+    expect(runtime.store.receipts.get(reply)).toMatchObject({ kind: 'reply', purpose: 'attention', text: '要不要连桌面端一起改？',
+      channel: trigger.channel })
+    expect(runtime.store.receipts.get(notice)).toMatchObject({ kind: 'notice', ticketId: ticket.id })
+    expect([outboxRows(runtime, reply), outboxRows(runtime, notice)]).toEqual([1, 1])
+  })
+  it('marks a ticket interrupted while its worker works on a person\'s message that arrived after its report', async () => {
+    const { ticket, sessionId } = await acceptedTicket()
+    await runTool(sessionId, 'orchestrator_report', { state: 'blocked', summary: '卡住了，需要你定' })
+    await receive(feishu('2', '继续吧', { root_id: 'om_1' }))
+    const working = runningAssignment(runtime.store.tickets.get(ticket.id)!)!
+    // The person's message reached the worker after the report, so the ticket is working again, not waiting for a person.
+    expect(working.deliveredAt! >= working.report!.at).toBe(true)
+    await runtime.effects.drain()
+    await runtime.executor.shutdown()
+    expect(runtime.store.tickets.get(ticket.id)!.assignments.map(item => item.state)).toEqual(['ended', 'pending'])
+    expect(runtime.store.receipts.get(key('interrupted', ticket.id, working.id))).toMatchObject({ kind: 'notice' })
   })
   it('leaves alone a ticket its worker already handed to a person, whose question a stop does not interrupt', async () => {
     const { ticket, sessionId } = await acceptedTicket()
@@ -1734,6 +1767,18 @@ describe('a restart with a question waiting for a person', () => {
     expect(kept.assignments.map(item => item.state)).toEqual(['running'])
     expect(kept.assignments[0]!.endedReason).toBeUndefined()
     expect(kept.inputs.filter(input => input.kind === 'text')).toEqual([])
+  })
+  it('asks nothing again when a person\'s message reached the ticket after the question', async () => {
+    const { ticket, sessionId } = await acceptedTicket()
+    await runTool(sessionId, 'orchestrator_report', { state: 'blocked', summary: '要定颜色', human_action: '用深色还是浅色？' })
+    const asked = runtime.store.tickets.get(ticket.id)!.attention!
+    const reply = key('attention-reply', asked.id)
+    // The answer arrives while the worker is down: it waits for the worker, and asking the question again would talk past them.
+    await receive(feishu('2', '用深色', { root_id: 'om_1' }))
+    runtime.executor.resume()
+    await runtime.sendReplies()
+    expect(runtime.store.receipts.get(reply)).toBeUndefined()
+    expect(outboxRows(runtime, reply)).toBe(0)
   })
 })
 

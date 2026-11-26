@@ -1,7 +1,7 @@
 /** The Engine's messages to Channels, each by the rule that allows it. */
 import { key } from './ids.ts'
 import { UserError } from './errors.ts'
-import { latestAssignment, liveTicket, ticketOutcome } from './model.ts'
+import { latestAssignment, latestReport, liveTicket, ticketOutcome } from './model.ts'
 import type { ChannelRef, Ticket, Trigger } from './model.ts'
 import type { ReplyStatus } from './ports.ts'
 import { EnginePart } from './part.ts'
@@ -64,12 +64,14 @@ export class Replies extends EnginePart {
   }
   /**
    * Ask a ticket's open question for a person again, where the message that raised it was written, unless that question was
-   * queued before: its id belongs to the Attention, so a host that starts again asks it once and a later answer keeps its
-   * place in the conversation. An open question outlives the Assignment that asked it, which a restart may keep.
+   * queued before or a person's message reached the ticket after it was asked: their answer may still wait for the worker,
+   * and asking again would talk past them. The id belongs to the Attention, so a host that starts again asks it once and a
+   * later answer keeps its place in the conversation. An open question outlives the Assignment that asked it, which a restart
+   * either keeps or replaces.
    */
   reaskAttention(ticket: Ticket): void {
     const attention = ticket.attention
-    if (!attention) return
+    if (!attention || this.answered(ticket)) return
     const id = key('attention-reply', attention.id)
     if (this.options.outbox.status(id) !== undefined) return
     const channel = (attention.triggerId ? this.repo.triggers.get(attention.triggerId)?.channel : undefined) ?? this.sourceChannel(ticket)
@@ -79,6 +81,14 @@ export class Replies extends EnginePart {
     } catch {
       /* A question a Channel refuses for its length stays unsent: the main Session asks it in words short enough to send. */
     }
+  }
+  /**
+   * Whether a person's message reached the ticket after its latest report, which answers the question that report asked. A
+   * message the worker has not read yet counts: it is the answer it will read, so the question is not asked again.
+   */
+  private answered(ticket: Ticket): boolean {
+    const report = latestReport(ticket)
+    return !!report && ticket.inputs.some(input => input.kind === 'trigger' && input.human && !input.context && input.at > report.at)
   }
   /**
    * Queue the message that says a request was deliberately not taken up, in the conversation it was written in. A decline

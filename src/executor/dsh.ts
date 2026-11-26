@@ -9,6 +9,7 @@ import type { AssessmentOutcome, Assignment, EngineForExecutor, Execution, Execu
   from '../core/index.ts'
 import type { Machine } from '../deployment.ts'
 import { runAsWorker, verifyDirectory } from '../infra/environment.ts'
+import { isChinese } from '../infra/text.ts'
 import type { Settings } from '../policy.ts'
 import type { Store } from '../app/store.ts'
 import { Later, type Effects } from '../app/effects.ts'
@@ -135,16 +136,15 @@ const RESUMED = 'This ticket ended earlier and the message that follows, on its 
   + 'report dropped without a message. Report ready when the follow-up is done. Do not repeat completed work.'
 const RETRIED = 'A person retried this ticket. Continue the assignment from the current worktree, git history and PR state.'
 /**
- * The notice a person reads in the conversation their ticket started in, in the language of the message that started it:
- * Chinese unless it is Japanese, as pull-end notices decide. It names the interruption no result will explain, says the
- * queued work continues on the next start, and how to stop it, so neither is left to guesswork. It promises no delivery
- * time: a stop stops the effect queue before the Executor, so the notice leaves with the next start.
+ * The notice a person reads in the conversation their ticket started in, in the language of the message that started it as
+ * `isChinese` decides. It names the interruption no result will explain, and says the queued work continues on the next
+ * start, so neither is left to guesswork. Neither the reply that stops it nor a delivery time is promised: a person's words
+ * reach the worker, and the main Session decides a stop, while a stop leaves the notice for the next start.
  */
 function stoppedNotice(request: string): string {
-  const chinese = /\p{Script=Han}/u.test(request) && !/[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(request)
-  return chinese
-    ? '这条工单被主机重启打断：本次没有产出结果。重启后会自动继续；如果你不希望继续，回一句取消即可。'
-    : 'This ticket was interrupted by the host restart: this run produced no result. The work continues automatically after the restart; reply cancel if you do not want it to.'
+  return isChinese(request)
+    ? '这条工单被主机重启打断：本次没有产出结果。重启后会自动继续；需要停止就回复「取消」。'
+    : 'This ticket was interrupted by the host restart: this run produced no result. The work continues automatically after the restart; reply cancel if you want it stopped.'
 }
 /** Formats a policy-change input for the worker; inputs recorded before `effect` existed fall back to a general notice. */
 function policyMessage(effect?: PolicyEffect): string {

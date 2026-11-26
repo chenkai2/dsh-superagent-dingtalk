@@ -78,8 +78,9 @@ export class Assignments extends EnginePart {
   /**
    * Handles a running assignment interrupted by a host restart: restarts it with a recovery note unless its latest report is
    * `waiting`, `ready`, `blocked`, or `failed` and no input was delivered after that report, in which case it keeps its
-   * Session, gets what waits for it, and has the question it left open asked again. A question is a result the restart must
-   * not lose, and asking it again under its own Attention id sends it once however often the host starts.
+   * Session and gets what waits for it. Either way it asks the question the worker left open again, because a question is a
+   * result the restart must not lose: a replacement Assignment starts over and would never send it, and a kept Session sends
+   * nothing by itself. Its Attention id keeps that to one message however often the host starts.
    */
   interrupted(ticketId: string, assignmentId: string): void {
     const ticket = this.running(ticketId, assignmentId)
@@ -89,10 +90,8 @@ export class Assignments extends EnginePart {
     const busy = !!running.deliveredAt && !!report && running.deliveredAt >= report.at
     const settled = !!report && ['waiting', 'ready', 'blocked', 'failed'].includes(report.state) && !busy
     if (!settled) this.tickets.restart(ticket, running, 'hostRestarted', RECOVERY_NOTE)
-    else {
-      if (ticket.undelivered.length) this.options.executor.deliver(ticket, running)
-      this.replies.reaskAttention(ticket)
-    }
+    else if (ticket.undelivered.length) this.options.executor.deliver(ticket, running)
+    this.replies.reaskAttention(ticket)
   }
   /**
    * Records a worker status report on an open ticket's current assignment, updating `attention`, `answers`, held automated
