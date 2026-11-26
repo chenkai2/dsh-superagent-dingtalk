@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { Engine, MemoryRepositories, UserError, followupOwners, key, runningAssignment, ticketOutcome, ticketStage,
+import { Engine, MemoryRepositories, SourceNotReady, UserError, followupOwners, key, runningAssignment, ticketOutcome, ticketStage,
   waitsForPerson } from '../src/core/index.ts'
 import type { Assessor, Assignment, Candidate, EngineOptions, Executor, OutboundMessage, Outcome, Policy, Ticket, Trigger } from '../src/core/index.ts'
 
@@ -34,7 +34,9 @@ function harness(policyOverrides: Partial<Policy> = {}, { emit, prepareTicket, f
     ...policyOverrides,
   }
   let clock = 0
-  const scope: EngineOptions['scope'] = { scope: t => t.meta.blocked ? { listened: false, reason: 'chat not allowed' } : { listened: true, observed: false, ...fresh !== undefined ? { fresh } : {} } }
+  const scope: EngineOptions['scope'] = { scope: t => t.meta.blocked ? { listened: false, reason: 'chat not allowed' }
+    : t.meta.unloaded ? { listened: false, reason: 'source_not_installed' }
+    : { listened: true, observed: false, ...fresh !== undefined ? { fresh } : {} } }
   const queued: EngineOptions['outbox'] = {
     send: message => { if (!outbox.some(item => item.id === message.id)) outbox.push(message) },
     status: id => outbox.some(item => item.id === id) ? 'pending' : undefined,
@@ -1662,4 +1664,13 @@ describe('ignores from the card', () => {
     h.engine.receive(trigger('5', { actor: guest })); h.engine.reevaluate('5'); h.pump()
     expect(() => h.engine.decide('5', { kind: 'accept', title: 'Fix', scope: 'small', reason: 'chat' })).toThrow(new UserError('notExplicit'))
   })
+})
+
+it('hands a message back, instead of dropping it, when its Source is not loaded yet', () => {
+  // A message that lands while the host starts or stops would otherwise be recorded as filtered and never seen again.
+  const h = harness()
+  const late = trigger('1', { source: 'dingtalk', threads: [{ source: 'dingtalk', id: 't1' }], meta: { unloaded: true } })
+  expect(() => h.engine.receive(late)).toThrow(SourceNotReady)
+  expect(h.repo.triggers.get('1')).toBeUndefined()
+  expect(h.repo.triggers.disposition('1')).toBeUndefined()
 })

@@ -1,4 +1,5 @@
 /** DingTalk reception: the Stream long connection for messages addressed to the robot, and `dws` polling for everything a person wrote. */
+import { SourceNotReady } from '../core/errors.ts'
 import { KV } from '../kv.ts'
 import { dwsOf, streamOf, type DingtalkConfig } from './dingtalk-config.ts'
 import { readDwsPage } from './dingtalk-dws.ts'
@@ -7,6 +8,9 @@ import { enrolGroup, enrolmentCommand, replyTo } from './dingtalk-enrol.ts'
 import { refreshGroupNames, rememberBot, rememberGroup } from './dingtalk-groups.ts'
 import { dingtalkTrigger, type DingtalkMessageInput } from './dingtalk-trigger.ts'
 import { pause } from './poll.ts'
+
+/** How long a poll waits when a message arrived before its Source plugin was loaded. */
+const WAIT_FOR_SOURCE_MS = 2_000
 import type { SourceContext } from './host.ts'
 
 /** The health entry that describes whether the Source can work at all. */
@@ -106,6 +110,9 @@ async function pollSafely(host: SourceContext, config: DingtalkConfig, tally: { 
     if (dws.enabled) host.report(DWS, { state: 'ready', detail: 'Reading configured groups' })
     host.report(HEALTH, { state: 'ready', detail: dws.enabled ? 'Reading configured groups' : 'Stream only' })
   } catch (error) {
+    // The Source plugin is not loaded yet: this is a startup or shutdown window, so the message waits for the next poll
+    // instead of counting as a failed read or being dropped.
+    if (error instanceof SourceNotReady) { await pause(WAIT_FOR_SOURCE_MS, AbortSignal.timeout(WAIT_FOR_SOURCE_MS)); return }
     tally.failures += 1
     tally.last = error instanceof Error ? error.message : String(error)
     if (tally.failures >= config.failuresBeforeError) {

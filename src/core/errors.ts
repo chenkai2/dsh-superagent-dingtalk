@@ -60,3 +60,15 @@ export class UserError extends Error {
     this.missing = kind === 'missing'
   }
 }
+
+/**
+ * Thrown when a message arrives before its Source plugin is loaded, which happens while the host is starting or stopping.
+ * It is not a filtering outcome: the message is handed back so its Source can offer it again, because dropping it here loses
+ * a person's message with nothing left to reprocess it.
+ */
+export class SourceNotReady extends Error {
+  constructor(readonly source: string) {
+    super(`${source} is not loaded yet, so its message cannot be judged`)
+    this.name = 'SourceNotReady'
+  }
+}

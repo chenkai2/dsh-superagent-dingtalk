@@ -1,4 +1,5 @@
 /** Trigger ingestion, thread correlation, subscription fan-out, and evaluation queuing. */
+import { SourceNotReady } from './errors.ts'
 import { key } from './ids.ts'
 import { isoTime, liveTicket, threadKey } from './model.ts'
 import type { Ticket, Trigger } from './model.ts'
@@ -24,6 +25,9 @@ export class Intake extends EnginePart {
     const at = this.now()
     const filter = this.options.scope.scope(trigger)
     if (!filter.listened) {
+      // A Source that is not loaded cannot judge its own messages: this is the startup and shutdown window, not a decision.
+      // Handing the message back keeps it, because nothing reprocesses a trigger that was dropped here.
+      if (filter.reason === 'source_not_installed') throw new SourceNotReady(trigger.source)
       this.repo.triggers.save(trigger); this.repo.triggers.saveDisposition(trigger.id, { filtered: { code: filter.reason }, fanout: [], at })
       return 'filtered'
     }

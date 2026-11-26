@@ -823,7 +823,8 @@ it('waits for setup without the agent\'s GitHub CLI: the panel works, and nothin
   expect(() => next.deployment).toThrow('dsh-superagent is waiting for setup: The agent GitHub CLI is not set.')
   expect((await api('GET', 'state')).body).toMatchObject({ setup: { problem: { place: 'github' }, accounts: null, machine: { stateDir: directory } } })
   expect(overviewOf(next).problems[0]).toEqual({ kind: 'setup', ...next.setupProblem })
-  await receive(feishu('30', '@bot 修一下'), next)
+  // The Feishu plugin is not loaded while setup is pending, so its message is handed back instead of stored and dropped.
+  await expect(receive(feishu('30', '@bot 修一下'), next)).rejects.toThrow('is not loaded yet')
   // A retry waits for setup instead of launching a worker that cannot run, and no report reaches the orchestrator.
   await next.engine.retryTicket(ticket.id)
   expect(next.store.tickets.get(ticket.id)!.assignments.map(item => item.state)).toEqual(['ended', 'pending'])
