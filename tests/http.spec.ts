@@ -10,10 +10,10 @@ import { SetupError } from '../src/setup.ts'
 type Handler = (req: unknown, res: unknown) => Promise<void>
 type Headers = Record<string, string | undefined>
 /** Mount management HTTP routes on a fake web server and return a request helper that includes default panel headers. */
-function serve(runtime: Partial<Record<keyof HttpHost, unknown>>, host = '127.0.0.1') {
+function serve(runtime: Partial<Record<keyof HttpHost, unknown>>, host = '127.0.0.1', trustedHosts: string[] = []) {
   let handler: Handler = async () => {}
   const ctx = { webServer: { host, port: 3082, register: (route: { handler: Handler }) => { handler = route.handler; return () => {} } } }
-  registerHttp(ctx as never, { ready: Promise.resolve(), ...runtime } as unknown as HttpHost)
+  registerHttp(ctx as never, { ready: Promise.resolve(), trustedHosts, ...runtime } as unknown as HttpHost)
   return async (method: string, path: string, body?: unknown, headers: Headers = {}) => {
     let status = 0, text = ''
     const chunks = body === undefined ? [] : [Buffer.from(typeof body === 'string' ? body : JSON.stringify(body))]
@@ -67,15 +67,22 @@ it('decodes path parameters and parses each route\'s query', async () => {
   expect(seen).toEqual(['feishu:oc_1:om/root', { filter: { kinds: ['accept', 'reopen'], since: expect.any(String) }, offset: 0, limit: 200 }])
 })
 
-it('answers only a same-origin request from the panel on the loopback address', async () => {
+it('answers only a same-origin request from the panel, on loopback or a host this installation allows', async () => {
   const call = serve({ sessions: { delivery: async () => 'injected' }, engine: { unsubscribe: () => true } })
   const post = (headers: Headers) => call('POST', 'threads/github%3A1/unsubscribe', undefined, headers)
-  for (const headers of [{ 'x-orchestrator-request': undefined }, { host: 'evil.example:3082' }, { host: '127.0.0.1:9999' },
-    { origin: 'http://evil.example' }, { host: 'localhost:3082', origin: 'http://127.0.0.1:3082' }]) {
+  // A host nobody named is refused even with the header, because a browser can be made to resolve an attacker's name here.
+  for (const headers of [{ 'x-orchestrator-request': undefined }, { host: 'evil.example:3082' },
+    { origin: 'http://evil.example' }, { host: 'localhost:3082', origin: 'http://127.0.0.1:3082' },
+    { host: 'other.example.com', origin: 'https://other.example.com' }]) {
     expect(await post(headers), JSON.stringify(headers)).toEqual({ status: 403,
       body: { error: 'Same-origin management request required' } })
   }
   expect(await post({ host: 'localhost:3082', origin: 'http://localhost:3082' })).toMatchObject({ status: 200 })
+  // Behind a proxy the panel is reached by that name, so the setting names it and the Origin matches it.
+  const proxied = serve({ sessions: { delivery: async () => 'injected' }, engine: { unsubscribe: () => true } }, '127.0.0.1', ['dsh.example.com'])
+  const viaProxy = (headers: Headers) => proxied('POST', 'threads/github%3A1/unsubscribe', undefined, headers)
+  expect(await viaProxy({ host: 'dsh.example.com', origin: 'https://dsh.example.com' })).toMatchObject({ status: 200 })
+  expect(await viaProxy({ host: 'other.example.com', origin: 'https://other.example.com' })).toMatchObject({ status: 403 })
   // Management routes require a loopback Web server.
   expect(() => serve({}, '0.0.0.0')).toThrow('Orchestrator management requires a loopback Web server')
 })

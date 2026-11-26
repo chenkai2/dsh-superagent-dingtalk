@@ -35,6 +35,8 @@ export interface HttpHost {
   /** Feishu message links resolved since startup, used by search to match AppLink URLs. */
   readonly sourceLinks: Pick<TextCache, 'entries'>
   readonly sources: SourceRegistry
+  /** The authorities this deployment declares trusted, as the Web startup configuration holds them. */
+  readonly trustedHosts: readonly string[]
   readonly prompts: Pick<Prompts, 'current' | 'version' | 'history' | 'preview' | 'save' | 'defaultChanged'>
   readonly sessions: Pick<Sessions, 'status' | 'notify' | 'delivery'>
   readonly settings: Pick<Settings, 'view' | 'save' | 'pause' | 'sync' | 'refreshLabels' | 'check'>
@@ -74,10 +76,27 @@ async function readBody(req: IncomingMessage, maxBytes = 128 * 1024): Promise<un
 function json(res: ServerResponse, status: number, value: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); res.end(JSON.stringify(value))
 }
-export function sameOrigin(req: Pick<IncomingMessage, 'headers'>, port: number): boolean {
+/**
+ * Whether a management request comes from this panel rather than another site. The custom header is the gate: a browser
+ * cannot set it cross-origin without a preflight this server never grants. The origin, when a browser sends one, must be
+ * the host that served the page — which is whatever name this installation is reached by, a proxy included, so it is not
+ * fixed to a loopback address.
+ * @param req The incoming request.
+ * @returns Whether the request may run a management route.
+ */
+export function sameOrigin(req: Pick<IncomingMessage, 'headers'>, trustedHosts: readonly string[] = []): boolean {
+  if (req.headers['x-orchestrator-request'] !== '1') return false
   const host = req.headers.host
-  if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`) return false
-  return req.headers['x-orchestrator-request'] === '1' && (req.headers.origin === undefined || req.headers.origin === `http://${host}`)
+  if (!host) return false
+  // The fence the rest of this panel uses: the host is loopback, or an authority the deployment declares trusted. Any
+  // other name is refused, because a browser can be made to resolve an attacker's domain to this address. The port is
+  // not part of that decision, exactly as the panel's own fence treats a loopback host.
+  const bare = host.replace(/:\d+$/, '')
+  const trusted = bare === '127.0.0.1' || bare === 'localhost' || bare === '::1' || bare === '[::1]'
+    || trustedHosts.some(entry => entry === host || entry === bare)
+  if (!trusted) return false
+  const origin = req.headers.origin
+  return origin === undefined || origin === `http://${host}` || origin === `https://${host}`
 }
 /** Maps errors to HTTP status codes and structured payloads that the panel localizes in the interface language. */
 function failure(error: unknown): [number, Record<string, unknown>] {
@@ -246,7 +265,7 @@ export function registerHttp(ctx: Context, runtime: HttpHost): () => void {
     ctx.webServer.register({ kind: 'prefix', path: '/orchestrator', handler: async (req, res) => {
       const url = new URL(req.url ?? '/', 'http://localhost')
       if (!url.pathname.startsWith('/orchestrator/api/')) { res.writeHead(404); res.end(); return }
-      if (!sameOrigin(req, ctx.webServer.port)) { json(res, 403, { error: 'Same-origin management request required' }); return }
+      if (!sameOrigin(req, runtime.trustedHosts)) { json(res, 403, { error: 'Same-origin management request required' }); return }
       try {
         await runtime.ready
         const route = match(table, req.method ?? 'GET', url.pathname.slice('/orchestrator/api/'.length).split('/'))
