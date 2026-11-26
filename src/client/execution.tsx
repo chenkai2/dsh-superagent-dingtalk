@@ -123,11 +123,11 @@ export function ExecutionSettings() {
           <EnvironmentVariables groups={environment.variables} sources={sources} onPick={insert} />
           <Field label={t('workerPlugins')} hint={t('workerPluginsHint')}>
             <PickList label={t('workerPlugins')} options={choices.plugins} value={value.workerPlugins}
-              empty={t('extrasNone')} onChange={next => edit({ workerPlugins: next })} />
+              empty={t('extrasPluginsNone')} onChange={next => edit({ workerPlugins: next })} />
           </Field>
           <Field label={t('workerMcp')} hint={t('workerMcpHint')}>
             <PickList label={t('workerMcp')} options={choices.servers} value={value.workerMcp}
-              empty={t('extrasNone')} onChange={next => edit({ workerMcp: next })} />
+              empty={t('extrasServersNone')} onChange={next => edit({ workerMcp: next })} />
           </Field>
           <Field label={t('blockedCommands')} hint={t('blockedCommandsHint')}>
             <Input className="dt-mono" value={value.blockedCommands} placeholder={t('blockedCommandsNone')} spellCheck={false}
@@ -153,7 +153,7 @@ function PickList({ label, options, value, empty, onChange }: {
   const shown: { value: string; detail?: string }[] = [...options,
     ...value.filter(item => !names.includes(item)).map(item => ({ value: item }))]
     .sort((a, b) => a.value.localeCompare(b.value))
-  if (!shown.length) return <span className="dt-hint">{empty}</span>
+  if (!shown.length) return <span className="dt-picklist-empty">{empty}</span>
   const all = shown.every(item => value.includes(item.value))
   const toggle = (item: string) => onChange(value.includes(item) ? value.filter(other => other !== item) : [...value, item])
   return <div className="dt-picklist">
