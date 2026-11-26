@@ -76,7 +76,10 @@ export class Replies extends EnginePart {
     // Attention replies must match the ticket's currently open question text.
     if (request.purpose === 'attention' && (!attention || attention.question !== request.question)) throw new UserError('notAttention')
     if (request.purpose === 'answer' && !trigger?.human) throw new UserError('notQuestion')
-    const id = attention ? key('attention-reply', attention.id) : key('reply', trigger?.id ?? ticket?.id ?? '', request.text)
+    // A ticket outlives its runs, so a reply belongs to the attempt that produced it: the same text answered
+    // again in a later assignment is a new message, not a duplicate of the earlier one.
+    const attempt = ticket ? latestAssignment(ticket)?.id : undefined
+    const id = attention ? key('attention-reply', attention.id) : key('reply', trigger?.id ?? attempt ?? ticket?.id ?? '', request.text)
     const existing = this.options.outbox.status(id)
     const ready = !ticket || !trigger || ticket.answers?.includes(trigger.id)
     if (request.purpose === 'answer' && !ready && !existing) throw new UserError('noAnswer')

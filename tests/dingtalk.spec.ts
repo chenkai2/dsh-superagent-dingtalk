@@ -1,4 +1,5 @@
 /** DingTalk Source: message normalization, mention detection, and the bot-signed Markdown the Channel posts. */
+import { createHash } from 'node:crypto'
 import { afterEach, expect, it, vi } from 'vitest'
 import { sendDingtalk } from '../src/sources/dingtalk-channel.ts'
 import { DingtalkConfigSchema } from '../src/sources/dingtalk-config.ts'
@@ -220,4 +221,12 @@ it('records the group a command came from, and answers once when it is already r
   const known = DingtalkConfigSchema.parse({ groups: [{ conversationId: 'cid/A', listen: 'all' }] })
   await expect(enrolGroup(ctx, known, input)).resolves.toContain('全部消息')
   expect(saved).toHaveLength(1)
+})
+
+it('answers the same text again in a later run instead of treating it as a duplicate', () => {
+  // The reply id includes the attempt, so a second run's identical answer is not dropped by the idempotent outbox.
+  const key = (...values: string[]) => createHash('sha256').update(JSON.stringify(values)).digest('hex').slice(0, 32)
+  const first = key('reply', 'assignment-1', '好')
+  const second = key('reply', 'assignment-2', '好')
+  expect(first).not.toBe(second)
 })
