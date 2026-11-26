@@ -1724,6 +1724,9 @@ describe('a stop with work in progress', () => {
       channel: trigger.channel })
     expect(runtime.store.receipts.get(notice)).toMatchObject({ kind: 'notice', ticketId: ticket.id })
     expect([outboxRows(runtime, reply), outboxRows(runtime, notice)]).toEqual([1, 1])
+    // The notice is queued before the question it left open, so a person reads why the work stopped before being asked.
+    const queued = (runtime.store.db.prepare('SELECT id FROM outbox ORDER BY rowid').all() as { id: string }[]).map(row => row.id)
+    expect(queued.indexOf(notice)).toBeLessThan(queued.indexOf(reply))
   })
   it('marks a ticket interrupted while its worker works on a person\'s message that arrived after its report', async () => {
     const { ticket, sessionId } = await acceptedTicket()
@@ -1773,12 +1776,22 @@ describe('a restart with a question waiting for a person', () => {
     await runTool(sessionId, 'orchestrator_report', { state: 'blocked', summary: '要定颜色', human_action: '用深色还是浅色？' })
     const asked = runtime.store.tickets.get(ticket.id)!.attention!
     const reply = key('attention-reply', asked.id)
-    // The answer arrives while the worker is down: it waits for the worker, and asking the question again would talk past them.
-    await receive(feishu('2', '用深色', { root_id: 'om_1' }))
+    const answer = feishu('2', '用深色', { root_id: 'om_1' })
+    await receive(answer)
+    // The answer arrived after the question and reached the worker: that is what makes asking again talk past the person.
+    const delivered = () => runtime.store.tickets.get(ticket.id)!.inputs
+      .filter(input => input.kind === 'trigger' && input.triggerId === answer.id && input.deliveredTo)
+    expect(delivered()).toHaveLength(1)
+    const replaced = runningAssignment(runtime.store.tickets.get(ticket.id)!)!
+    expect(replaced.deliveredAt! >= replaced.report!.at).toBe(true)
     runtime.executor.resume()
     await runtime.sendReplies()
     expect(runtime.store.receipts.get(reply)).toBeUndefined()
     expect(outboxRows(runtime, reply)).toBe(0)
+    // The message itself is not lost in the restart: it is the ticket's, delivered to the Assignment it replaced.
+    const kept = runtime.store.tickets.get(ticket.id)!
+    expect(kept.inputs.filter(input => input.kind === 'trigger' && input.triggerId === answer.id)).toHaveLength(1)
+    expect(delivered()).toHaveLength(1)
   })
 })
 

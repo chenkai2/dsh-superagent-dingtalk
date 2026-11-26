@@ -420,17 +420,18 @@ export class DshExecutor implements Executor {
    * start launches the work instead of finding a worker that vanished mid-turn, and a person who sends the request again
    * continues the same ticket. An Assignment the worker had handed off — a result, a question, or a report that it waits for a
    * person — is left as it is: the person already owes the next move, and a restart asks its question again (see
-   * `Assignments.interrupted`). A stop that runs again finds no running Assignment and tells nobody twice.
+   * `Assignments.interrupted`). The notice is queued before that, so a person reads why the work stopped before the question
+   * it left open. A stop that runs again finds no running Assignment and tells nobody twice.
    */
   private interrupt(): void {
     for (const ticket of this.host.store.tickets.open()) {
       const assignment = runningAssignment(ticket)
       if (!assignment || !this.inFlight(ticket)) continue
-      this.host.engine.assignmentInterrupted(ticket.id, assignment.id)
       try { this.host.engine.reply({ purpose: 'interrupted', ticketId: ticket.id, assignmentId: assignment.id, text: stoppedNotice(sourceTrigger(this.host, ticket)?.text ?? '') }) }
       catch {
         /* A ticket whose conversations can receive no message keeps the interrupted Assignment, which the panel shows. */
       }
+      this.host.engine.assignmentInterrupted(ticket.id, assignment.id)
     }
   }
   /**
