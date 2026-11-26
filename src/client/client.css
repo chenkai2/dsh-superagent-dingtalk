@@ -387,3 +387,4 @@ a.dt-btn, a.dt-btn:hover { text-decoration: none; }
 .dt-picklist-note { margin: 6px 0 0; color: var(--dsh-text-secondary); font-size: 12px; line-height: 1.5; }
 .dt-mount-failures { display: flex; flex-direction: column; gap: 8px; margin: 0; padding-left: 18px; }
 .dt-mount-failure-why { display: block; color: var(--dsh-text-secondary); font-size: 12px; line-height: 1.5; }
+.dt-mount-failure-reason { white-space: pre-wrap; }

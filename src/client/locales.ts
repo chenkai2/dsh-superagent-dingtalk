@@ -420,6 +420,8 @@ const TEXT = {
   'mountFailure.not-configured': ['profile 已经不再配置这个名字', 'the profile no longer configures this name'],
   'mountFailure.refused': ['挂载时被拒绝', 'mounting was refused'],
   'mountFailure.profile-unreadable': ['读不到 profile 的组合文件', 'the profile composition could not be read'],
+  'mountFailure.command-missing': ['命令不在这台机器上，服务起不来', 'the command is not on this machine, so the server cannot start'],
+  'mountFailure.unavailable': ['挂上了但没连上，或没有注册任何工具', 'it mounted but did not connect or registered no tools'],
   mountFailureAttempts: ['已失败 {count} 次', 'failed {count} times'],
   blockedCommandsHint: ['执行器 Session 调用这些命令名时直接失败，例如用你个人账号登录的 CLI。只拦按名字的调用，用绝对路径仍能运行，所以不是安全边界。gh、git、lark-cli 不能禁止。', 'Command names that fail when an Executor Session calls them, such as a CLI signed in to your own account. Only calls by name fail; an absolute path still runs, so this is not a security boundary. gh, git and lark-cli cannot be blocked.'],
   blockedCommandsNone: ['以空格分隔；没有', 'Separated by spaces; none'],

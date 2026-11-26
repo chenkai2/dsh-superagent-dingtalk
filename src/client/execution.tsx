@@ -9,7 +9,7 @@ import { SaveBar } from './draft.tsx'
 import { usePanel } from './provider.tsx'
 import { TicketLine } from './rows.tsx'
 import { ConfigHistory, Field, Fields, ModelField, numberOf, useBlockDraft, useSettings } from './settings-kit.tsx'
-import { localized } from './text.ts'
+import { localized, when } from './text.ts'
 import { ConfirmButton, Hint, LabelValue, LoadMore, LoadState, Section, StatusHead } from './widgets.tsx'
 
 export function ExecutionStatus({ filter: current, state, reload }: {
@@ -159,8 +159,9 @@ function MountFailures({ failures }: { failures: readonly WorkerMountFailure[] }
   return <ul className="dt-mount-failures">{failures.map(failure => <li key={`${failure.kind}:${failure.name}`}>
     <span className="dt-mono">{failure.name}</span>
     <span className="dt-mount-failure-why">{t(`mountFailure.${failure.code}`)}
-      {' · '}{t('mountFailureAttempts', { count: String(failure.attempts) })}</span>
-    <small className="dt-picklist-detail">{failure.reason}</small>
+      {' · '}{t('mountFailureAttempts', { count: String(failure.attempts) })}
+      {' · '}{when(failure.at, t('lang'))}</span>
+    <small className="dt-picklist-detail dt-mount-failure-reason">{failure.reason}</small>
   </li>)}</ul>
 }
 

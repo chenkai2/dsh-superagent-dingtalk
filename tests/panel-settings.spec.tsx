@@ -157,8 +157,8 @@ it('says on the Execution settings which plugin or MCP server did not mount, and
   await click(zh['tab.execution'])
   await click(find(zh['tab.settings'], '.dt-status-head button'))
   const rows = all('.dt-mount-failures li').map(row => row.textContent)
-  expect(rows).toEqual([
-    `dbx${zh['mountFailure.not-configured']} · 已失败 2 次the profile no longer configures dbx`,
-    `@acme/memory${zh['mountFailure.not-installed']} · 已失败 1 次Cannot find package`,
-  ])
+  expect(rows).toHaveLength(2)
+  // The row says which name, why in the interface language, how often, and when the last attempt was.
+  expect(rows[0]).toMatch(new RegExp(`^dbx${zh['mountFailure.not-configured']} · 已失败 2 次 · .*前the profile no longer configures dbx$`))
+  expect(rows[1]).toMatch(new RegExp(`^@acme/memory${zh['mountFailure.not-installed']} · 已失败 1 次 · .*前Cannot find package$`))
 })

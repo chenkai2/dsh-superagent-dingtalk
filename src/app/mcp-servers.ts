@@ -37,6 +37,7 @@ const CLIENT = '@deepseek-ai/dsh-mcp-client'
 
 /** Why a capability an Executor Session asked for did not mount, as the panel words it in both languages. */
 export type WorkerMountFailureCode = 'not-installed' | 'not-configured' | 'refused' | 'profile-unreadable'
+  | 'command-missing' | 'unavailable'
 
 /** One plugin or MCP server an Executor Session asked for and did not get. */
 export interface WorkerMountFailure {
@@ -61,9 +62,23 @@ const failures = new Map<string, WorkerMountFailure>()
 const MAX_FAILURES = 20
 const MAX_REASON = 300
 
-/** Drop URL query strings: an mcp-client row usually carries its key there, and a connection error quotes the address. */
-function redactReason(reason: string): string {
-  const redacted = reason.replace(/(https?:\/\/[^\s?#]+)\?[^\s]*/gu, '$1?…').trim()
+/**
+ * Remove what a reason quotes that must not reach the panel or the log: a URL's user information and its query string (an
+ * mcp-client row carries its key there), a credential header, and a credential option or pair. A JSON snippet keeps its
+ * closing quotes and brace, so the text still says which field failed.
+ * @param reason The failure's own words.
+ * @returns The same words without credential-shaped values.
+ */
+export function redactMountReason(reason: string): string {
+  const redacted = reason
+    // `https://user:pass@host/…` names the credential before the host.
+    .replace(/(\b[a-z][\w+.-]*:\/\/)[^\s/@]+@/giu, '$1…@')
+    .replace(/(\bhttps?:\/\/[^\s?#"']+)\?[^\s"']*/gu, '$1?…')
+    .replace(/(\bhttps?:\/\/[^\s?#"']+)#[^\s"']*/gu, '$1#…')
+    .replace(/(\bAuthorization\s*:\s*(?:Bearer|Basic|Token)?\s*)[^\s"',;}]+/giu, '$1…')
+    .replace(/(--(?:api[-_]?key|token|secret|password)\s+)[^\s"',;]+/giu, '$1…')
+    .replace(/(\b(?:api[-_]?key|access[-_]?token|token|secret|password)\s*[=:]\s*)[^\s"',;&]+/giu, '$1…')
+    .trim()
   return redacted.length > MAX_REASON ? `${redacted.slice(0, MAX_REASON - 1)}…` : redacted
 }
 
@@ -80,7 +95,7 @@ export function recordWorkerMountFailure(kind: WorkerMountFailure['kind'], name:
   const previous = failures.get(id)
   // Deleting first keeps insertion order chronological, so the cap drops the oldest failure instead of the newest.
   failures.delete(id)
-  failures.set(id, { kind, name, code, reason: redactReason(reason), attempts: (previous?.attempts ?? 0) + 1,
+  failures.set(id, { kind, name, code, reason: redactMountReason(reason), attempts: (previous?.attempts ?? 0) + 1,
     at: new Date().toISOString() })
   while (failures.size > MAX_FAILURES) failures.delete(failures.keys().next().value!)
 }
@@ -143,7 +158,9 @@ function collect(value: unknown, found: Map<string, ProfileMcpServer>, seen: Set
 
 /**
  * Reads the MCP servers a profile composes, so settings can offer them by name without a second copy of their transport.
- * @param profileDir The profile directory, normally `$DSH_PROFILE_DIR`.
+ * Only the home-level and profile-level composition files are read: a row a bundle injects from its own patch is out of
+ * scope, so a server configured that way is neither offered nor mounted by name.
+ * @param profileDir The profile directory; see {@link installedProfileDir}.
  * @returns The servers by name, and why the file could not be read when it could not.
  */
 export function profileMcpServers(profileDir: string | undefined, homeDir = process.env.DSH_HOME): {
