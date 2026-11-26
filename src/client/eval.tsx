@@ -112,8 +112,8 @@ function AdmissionTable({ rows, labels, table, explicit, onChange }: {
         cell, event.target.value as Admission)}>
         {ADMISSION_OPTIONS[cell].map(option => <option key={option} value={option}>{t(`admissionValue.${option}`)}</option>)}
       </select>
-      <span className="dt-admission-slot">{cell !== 'unlistedUnaddressed' && value === 'explicit' && <InfoTip
-        text={cell === 'listedUnaddressed' ? t('admissionListedUnaddressedWarning') : t('admissionAnyoneWarning')} icon="alert" warn />}</span>
+      <span className="dt-admission-slot">{cell === 'unlistedAddressed' && value === 'explicit' && <InfoTip
+        text={t('admissionAnyoneWarning')} icon="alert" warn />}</span>
     </span></td>
   }
   return <Section title={t('admission')} hint={t('admissionHint')}>

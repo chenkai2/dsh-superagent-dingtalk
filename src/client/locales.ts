@@ -281,8 +281,6 @@ const TEXT = {
   'admissionValue.inferred': ['推断的候选', 'Inferred candidate'],
   'admissionValue.ignore': ['忽略', 'Ignore'],
   admissionAnyoneWarning: ['这个范围里任何人点名智能体都能直接发起工作', 'Anyone here who addresses the agent can originate work directly'],
-  admissionListedUnaddressedWarning: ['名单里的人在这个范围里随便说一句都会成为工单——适合「专用指令群」，不适合闲聊群',
-    'Anything an allowed person says in this scope becomes a ticket — right for a dedicated command group, wrong for a chat group'],
   admissionFootnote: ['「推断的候选」按接单模式评估：模式为关闭时忽略。已有工单的线程里的跟进不看这张表。改成更弱的选项时，按这一格接下的进行中工单的授权失效。', 'Inferred candidates follow the accept mode and are ignored when it is off. Follow-ups on Threads that have Tickets do not use this table. Weakening a cell revokes the Mandates of open Tickets accepted under it.'],
   syncDone: ['上次同步', 'Last synced'],
   evalRecordsPaused: ['处理已暂停：新的触发会被记录，但不会被评估。', 'Processing is paused: new Triggers are recorded but not evaluated.'],

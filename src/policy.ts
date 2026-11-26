@@ -72,8 +72,7 @@ export type RoleModel = z.infer<typeof RoleModelSchema>
 
 export const AllowedSchema = z.object({ id: z.string().trim().min(1).max(200), name: z.string().trim().max(100).optional() }).strict()
 const Weak = z.enum(['inferred', 'ignore'])
-const Admission = z.enum(['explicit', 'inferred', 'ignore'])
-export const AdmissionRowSchema: z.ZodType<AdmissionRow> = z.object({ listedUnaddressed: Admission.optional(), unlistedAddressed: Admission.optional(), unlistedUnaddressed: Weak.optional() }).strict()
+export const AdmissionRowSchema: z.ZodType<AdmissionRow> = z.object({ listedUnaddressed: Weak.optional(), unlistedAddressed: z.enum(['explicit', 'inferred', 'ignore']).optional(), unlistedUnaddressed: Weak.optional() }).strict()
 export const AdmissionTableSchema = z.record(z.string(), AdmissionRowSchema)
 export const SourcePolicySchema = z.object({ allowed: z.array(AllowedSchema).default([]), admission: AdmissionTableSchema.default({}) }).catchall(z.unknown())
 export type SourcePolicy = z.infer<typeof SourcePolicySchema>
