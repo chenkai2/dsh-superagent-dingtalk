@@ -73,6 +73,8 @@ it('finds the profile from a package inside its node_modules, and the plugins in
   write(['node_modules', '@acme', 'thing', 'package.json'], { name: '@acme/thing', version: '1.2.3', dsh: { bundle: {} } })
   write(['node_modules', 'plain-plugin', 'package.json'], { name: 'plain-plugin', version: '0.1.0', dsh: { client: {} } })
   write(['node_modules', 'lodash', 'package.json'], { name: 'lodash', version: '4.0.0' })
+  // A leftover copy keeps the original manifest name, so its directory no longer matches it.
+  write(['node_modules', 'plain-plugin.bak-0.0.9', 'package.json'], { name: 'plain-plugin', version: '0.0.9', dsh: {} })
   // The package itself knows which profile it was installed into, which the host does not export.
   expect(profileFromPath(join(pkg, 'lib'))).toBe(root)
   const { plugins } = installedPlugins(join(root, 'node_modules'))

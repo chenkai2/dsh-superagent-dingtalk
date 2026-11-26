@@ -107,9 +107,11 @@ export function installedPlugins(nodeModules: string | undefined): { plugins: In
       const name = `${prefix}${entry.name}`
       try {
         const manifest = JSON.parse(readFileSync(join(dir, entry.name, 'package.json'), 'utf8')) as
-          { dsh?: unknown; version?: string; description?: string }
-        // A DSH plugin declares its composition; an ordinary dependency does not.
-        if (manifest.dsh) names.push({ name, ...manifest.version ? { version: manifest.version } : {},
+          { name?: string; dsh?: unknown; version?: string; description?: string }
+        // A renamed leftover copy keeps the original manifest name, so a mismatch means this is not the installed package.
+        // A DSH plugin also declares its composition; an ordinary dependency does not.
+        if (manifest.name !== name || !manifest.dsh) continue
+        names.push({ name, ...manifest.version ? { version: manifest.version } : {},
           ...manifest.description ? { description: manifest.description } : {} })
       } catch { /* Not a package, or one without a readable manifest. */ }
     }
