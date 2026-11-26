@@ -2,6 +2,7 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { sendDingtalk } from '../src/sources/dingtalk-channel.ts'
 import { DingtalkConfigSchema } from '../src/sources/dingtalk-config.ts'
+import { dingtalkKind } from '../src/sources/dingtalk.ts'
 import { addressedTo, ingestible, readFrom } from '../src/sources/dingtalk-loops.ts'
 import { StreamMessageSchema, dingtalkChannel, dingtalkTime, dingtalkTrigger, dingtalkTriggerId, streamText }
   from '../src/sources/dingtalk-trigger.ts'
@@ -124,4 +125,34 @@ it('reads from a few seconds before the cursor, so a late-indexed message is not
   expect(readFrom(cursor)).toBe('2026-11-25T09:11:50.000Z')
   // An unreadable cursor is passed through rather than turned into an invalid time.
   expect(readFrom('not-a-time')).toBe('not-a-time')
+})
+
+/** A Source context whose command runner answers `dws --version` with `version`, or refuses when `version` is undefined. */
+const checkingHost = (config: unknown, version?: string): Pick<SourceContext, 'commands' | 'config'> => ({
+  commands: { run: async () => { if (version === undefined) throw new Error('spawn dws ENOENT'); return version } } as never,
+  config: <C,>() => config as C,
+})
+
+it('reports dws, the Stream robot, the group bots and the listened groups', async () => {
+  const config = DingtalkConfigSchema.parse({
+    groups: [{ conversationId: 'cid/A', name: 'g', listen: 'all' }],
+    bots: [{ name: '小陈', conversationId: 'cid/A', token: 't', secret: 's' }],
+    streamClientId: 'id', streamClientSecret: 'secret',
+  })
+  const result = await dingtalkKind.check!(checkingHost(config, 'dws version v1.0.68\n'))
+  expect(result.ok).toBe(true)
+  expect(result.items.map(item => item.key)).toEqual(['dws', 'stream', 'bots', 'groups'])
+  expect(result.items[0]).toEqual({ key: 'dws', ok: true, detail: 'dws · v1.0.68' })
+})
+
+it('keeps reporting the remaining checks when dws is missing', async () => {
+  const config = DingtalkConfigSchema.parse({ groups: [{ conversationId: 'cid/A' }] })
+  const result = await dingtalkKind.check!(checkingHost(config))
+  expect(result.ok).toBe(false)
+  expect(result.items[0]).toMatchObject({ key: 'dws', ok: false })
+  expect(result.items[0]!.detail).toContain('ENOENT')
+  // A group is enough to listen to it, but without credentials neither a bot nor the Stream is configured.
+  expect(result.items[1]).toMatchObject({ key: 'stream', ok: false })
+  expect(result.items[2]).toMatchObject({ key: 'bots', ok: false })
+  expect(result.items[3]).toMatchObject({ key: 'groups', ok: true })
 })

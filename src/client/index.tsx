@@ -12,8 +12,11 @@ import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { openKnownSession, SessionNavigationError } from '../navigation.ts'
 import { App } from './app.tsx'
+import { DingtalkPage } from './dingtalk-settings.tsx'
 import { PluginConfig, usePageForm } from './deployment.tsx'
 import { en, zh } from './locales.ts'
+import { PanelProvider } from './provider.tsx'
+import { SettingsProvider } from './settings-kit.tsx'
 import type { T } from './text.ts'
 
 type ClientContext = Context & { sessions: ISessions }
@@ -45,6 +48,12 @@ function Mounted({ ctx, t }: { ctx: ClientContext; t: T }) {
   return <App t={t} openSession={openSession} deploymentForm={form} />
 }
 
+
+/** The settings shell renders sections outside the management panel, so the page brings its own panel context. */
+function DingtalkSection({ t }: { t: T }) {
+  return <PanelProvider t={t}><SettingsProvider><DingtalkPage t={t} /></SettingsProvider></PanelProvider>
+}
+
 export const inject = ['slots', 'locale', 'sessions', 'uiWorkspace']
 /** Registers the panel, sidebar icon, and Plugin Manager config view; `configForms` is optional (without it, machine settings are read-only). */
 export function apply(ctx: ClientContext): void {
@@ -55,4 +64,9 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({ name: 'sidebar.panellist', id: PANEL_ID, order: 10, label: () => t('panel'), locale: NS }, HammerIcon))
   ctx.slots.inject('plugins.row.config', () => ctx.slots.register({ name: 'plugins.row.config', key: `${ENTRY}#${ENTRY}`, locale: NS },
     (props: PluginConfigViewProps & { t: T }) => <PluginConfig t={props.t} view={props.view} form={props.form} />))
+  // 钉钉独立设置页：DSH 设置里的一节，不依赖管理面板也能配置。
+  ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section', id: 'dingtalk', order: 30, locale: NS,
+    label: () => t('dingtalkSectionLabel'),
+  }, () => <DingtalkSection t={t} />))
 }

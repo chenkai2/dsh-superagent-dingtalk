@@ -49,14 +49,18 @@ const serve = () => vi.stubGlobal('fetch', vi.fn(async (url: string) => {
 }))
 afterEach(() => { vi.unstubAllGlobals() })
 
-it('registers a localized main panel, sidebar entry and Plugin Manager row page, and no settings section', () => {
+it('registers a localized main panel, sidebar entry, Plugin Manager row page and a DingTalk settings section', () => {
   const { entries, dictionaries, main, nav } = fixture([])
-  expect(entries.map(entry => entry.options.name)).toEqual(['main', 'sidebar.panellist', 'plugins.row.config'])
+  expect(entries.map(entry => entry.options.name)).toEqual(['main', 'sidebar.panellist', 'plugins.row.config', 'settings.section'])
   expect(entries[2]!.options).toMatchObject({ key: 'dsh-superagent#dsh-superagent', locale: 'dshSuperagent' })
   expect(Object.keys(dictionaries)).toEqual(['dshSuperagent'])
   expect(main.options).toMatchObject({ key: 'dsh-superagent', locale: 'dshSuperagent' })
   expect(nav.options).toMatchObject({ id: 'dsh-superagent', order: 10, locale: 'dshSuperagent' })
   expect(nav.options.label?.()).toBe('Superagent')
+  // The DingTalk settings section is reachable without the management panel.
+  expect(entries[3]!.options).toMatchObject({ id: 'dingtalk', locale: 'dshSuperagent' })
+  // The fixture translates in the first language, which is Chinese here.
+  expect(entries[3]!.options.label?.()).toBe('钉钉')
 })
 
 it('opens a listed Session through the workspace from the main panel', async () => {

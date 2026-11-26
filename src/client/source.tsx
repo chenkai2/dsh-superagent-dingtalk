@@ -11,7 +11,8 @@ import { ConfigHistory, Fields, SourceField, useBlockDraft, useSettings } from '
 import { actorName, healthText, localized, readableMarkers, reasonLabel, valueLabel, when } from './text.ts'
 import { CheckSetupButton, Hint, LabelValue, LoadState, SetupMessage, StatusHead, When } from './widgets.tsx'
 
-function SourceCard({ source }: { source: SourceView }) {
+/** One Source's settings form: enable switch, status, every field, and the save bar. */
+export function SourceCard({ source }: { source: SourceView }) {
   const { t, call } = usePanel()
   const { running } = usePanelData()
   const { reload } = useSettings()

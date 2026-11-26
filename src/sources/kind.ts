@@ -82,6 +82,19 @@ export interface TriggerContext {
   image(agent: Agent, commands: Commands, message: { id: string; text: string }, key: string, stateDir: string,
     signal: AbortSignal): Promise<unknown>
 }
+/** One line of a settings-page probe: what was checked, whether it holds, and what was observed. */
+export interface SourceCheckItem {
+  key: string
+  ok: boolean
+  /** Observation in the operator's words, e.g. a version number or the reason a check failed. */
+  detail: string
+}
+/** Result of probing a kind's surroundings from the settings page, in the order a person should read it. */
+export interface SourceCheck {
+  ok: boolean
+  items: SourceCheckItem[]
+}
+
 /** Pluggable source kind descriptor registered with SourceRegistry. */
 export interface SourceKind<C extends Record<string, unknown> = Record<string, unknown>> {
   /** Stable ID; a default instance with the same ID exists when none is stored. */
@@ -107,6 +120,8 @@ export interface SourceKind<C extends Record<string, unknown> = Record<string, u
   repliesTo?(trigger: Trigger): string | undefined
   /** Policy section for kinds whose senders have their own identity. */
   policy?: SourcePolicyPart<Record<string, unknown> & { allowed: { id: string; name?: string }[] }>
+  /** Probes the tooling this kind needs (a CLI, credentials) so the settings page can report it on demand. */
+  check?(host: Pick<SourceContext, 'commands' | 'config'>): Promise<SourceCheck>
   /** Rereads display names for row keys (such as chat names), stores the resolved names in `KV.sources.labels(kind)`, and returns them. */
   refreshLabels?(host: SourceHost, signal?: AbortSignal): Promise<Record<string, string>>
   /** Variables the kind registers with the execution environment and how their values are computed. */

@@ -2,8 +2,10 @@
 # profile supplies the `dsh-superagent` entry's stateDir (see docs/006-deployment.md and examples/profile.cordis.patch.yml); the plugin
 # refuses to start without stateDir.
 - insert:
+    # 包根：改名后这里若仍写 `dsh-superagent` 就无法解析，整个 orchestrator 起不来，
+    # 后续两个 Source 会一直停在 waiting for service: orchestrator。
     - id: dsh-superagent
-      name: dsh-superagent
+      name: '@chenkai114/dsh-superagent-dingtalk'
     - id: dsh-superagent-github
       name: '@chenkai114/dsh-superagent-dingtalk/github-watch'
     # Optional DingTalk Source; enable it, then set the groups, the dws CLI, and either a Stream robot or a group robot.

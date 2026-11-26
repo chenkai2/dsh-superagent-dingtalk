@@ -2,6 +2,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
 import { dingtalkLink, sendDingtalk } from './dingtalk-channel.ts'
+import { checkDingtalk } from './dingtalk-check.ts'
 import { DingtalkConfigSchema, dwsOf, streamOf, type DingtalkConfig } from './dingtalk-config.ts'
 import { runDingtalk } from './dingtalk-loops.ts'
 import { dingtalkThreadContext } from './dingtalk-read.ts'
@@ -124,6 +125,7 @@ export const dingtalkKind: SourceKind<DingtalkConfig> = {
     }),
   },
   facts: (deployment): Record<string, Localized | string> => deployment ? {} : {},
+  check: ({ commands, config }) => checkDingtalk(commands, config<DingtalkConfig>('dingtalk') ?? DingtalkConfigSchema.parse({})),
 }
 
 export const name = 'dsh-superagent-dingtalk'

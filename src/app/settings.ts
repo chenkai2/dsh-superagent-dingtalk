@@ -5,6 +5,7 @@ import { UserError, type EngineForSettings } from '../core/index.ts'
 import { EvalConfigSchema, ExecutorConfigSchema, PolicyConfigSchema, SettingsSchema, policyEffects, policyVersion } from '../policy.ts'
 import type { Settings as SettingsValue, SettingsBlock, SettingsOrigin, SettingsSave } from '../policy.ts'
 import type { SourceHost } from '../sources/host.ts'
+import type { SourceCheck } from '../sources/kind.ts'
 import type { HealthBoard, HealthEntry } from '../infra/health.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
 import { resolveRoleModel } from './role-models.ts'
@@ -263,5 +264,20 @@ export class Settings {
     const before = store.get(KV.sources.labels(id)) ?? {}
     const after = await kind.refreshLabels(this.host.sourceHost)
     return { added: Object.entries(after).filter(([key]) => !(key in before)).map(([, name]) => name).sort((a, b) => a.localeCompare(b)) }
+  }
+
+  /**
+   * Probes the tooling a Source needs, for the settings page to report on demand.
+   * @param id The Source instance ID.
+   * @returns Whether every check holds, and one item per check.
+   * @throws UserError (`noCheck`) when the Source has no probe.
+   */
+  async check(id: string): Promise<SourceCheck> {
+    const { sources } = this.host
+    const instance = sources.instance(id)
+    const kind = instance && sources.kind(instance.kind)
+    if (!kind?.check) throw new UserError('noCheck')
+    const context = this.host.sourceHost.context(kind)
+    return kind.check({ commands: context.commands, config: context.config })
   }
 }
