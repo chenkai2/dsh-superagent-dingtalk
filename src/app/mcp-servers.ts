@@ -1,7 +1,7 @@
 /** The MCP servers a DSH profile configures, read from the profile's own composition rather than copied into settings. */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { parse } from 'yaml'
+import { parseDocument } from 'yaml'
 
 /** One entry a profile mounts, by the name its tools live under. */
 export interface ProfileMcpServer { name: string; transport: 'stdio' | 'streamable-http' | 'sse'; config: Record<string, unknown> }
@@ -39,10 +39,11 @@ export function profileMcpServers(profileDir: string | undefined): { servers: Ma
     let text: string
     try { text = readFileSync(join(profileDir, file), 'utf8') } catch { continue }
     read += 1
-    // Cordis's `!!js` tags are unknown here and only appear on rows this function does not read; their warnings are noise.
-    try { collect(parse(text, { logLevel: 'silent' }), servers, new Set()) } catch (error) {
-      return { servers, problem: `${file} could not be parsed: ${error instanceof Error ? error.message : String(error)}` }
-    }
+    // Cordis's `!!js` tags are unknown here and only appear on rows this function does not read, so tag warnings are noise.
+    // A document that does not parse is not: it would silently offer no servers and read as "no MCP configured".
+    const document = parseDocument(text, { logLevel: 'silent' })
+    if (document.errors.length) return { servers, problem: `${file} could not be parsed: ${document.errors[0]!.message}` }
+    collect(document.toJS(), servers, new Set())
   }
   return read > 0 ? { servers } : { servers, problem: 'No profile composition file was readable' }
 }
