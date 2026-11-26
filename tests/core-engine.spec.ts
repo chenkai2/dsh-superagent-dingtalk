@@ -12,7 +12,7 @@ interface Hooks {
   emit?: (event: { type: string; data: Record<string, unknown> }) => void
   prepareTicket?: EngineOptions['prepareTicket']
 }
-function harness(policyOverrides: Partial<Policy> = {}, { emit, prepareTicket }: Hooks = {}) {
+function harness(policyOverrides: Partial<Policy> = {}, { emit, prepareTicket, fresh }: Hooks & { fresh?: boolean } = {}) {
   const repo = new MemoryRepositories()
   const outbox: OutboundMessage[] = []
   const withdrawn: string[] = []
@@ -34,7 +34,7 @@ function harness(policyOverrides: Partial<Policy> = {}, { emit, prepareTicket }:
     ...policyOverrides,
   }
   let clock = 0
-  const scope: EngineOptions['scope'] = { scope: t => t.meta.blocked ? { listened: false, reason: 'chat not allowed' } : { listened: true, observed: false } }
+  const scope: EngineOptions['scope'] = { scope: t => t.meta.blocked ? { listened: false, reason: 'chat not allowed' } : { listened: true, observed: false, ...fresh !== undefined ? { fresh } : {} } }
   const queued: EngineOptions['outbox'] = {
     send: message => { if (!outbox.some(item => item.id === message.id)) outbox.push(message) },
     status: id => outbox.some(item => item.id === id) ? 'pending' : undefined,
@@ -137,6 +137,18 @@ describe('eval', () => {
     h.engine.reply({ purpose: 'decline', triggerId: '1', text: 'That is another project, so this chat cannot take it.' })
     h.pump()
     expect(h.outbox.filter(message => message.purpose === 'decline')).toHaveLength(1)
+  })
+  it('assesses a request that addressed the agent even while a ticket follows its thread, when the scope says so', async () => {
+    // A group used as a command desk: each @ is new work, and the assessment decides which ticket it belongs to. The
+    // default keeps upstream behaviour, where the thread's ticket takes the message directly.
+    const h = harness({}, { fresh: true })
+    h.engine.receive(trigger('1')); h.pump()
+    h.decide(h.requests.at(-1)!, { kind: 'accept', title: 'Fix', scope: 'small', reason: 'requested', acknowledgement: 'ok' })
+    const listed = trigger('2')
+    h.engine.receive({ ...listed, addressed: 'mention' }); h.pump()
+    // Nothing was handed to the running ticket, so the message is a candidate the assessment can route.
+    expect(h.repo.triggers.disposition('2')?.fanout).toEqual([])
+    expect(h.requests).toHaveLength(2)
   })
   it('refuses to decide an eval that a later eval replaced, and decides the later one', async () => {
     const h = harness()

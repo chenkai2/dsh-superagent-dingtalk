@@ -46,12 +46,17 @@ export class Intake extends EnginePart {
       }
       this.repo.threads.save(thread)
     }
-    for (const [ticketId, { ticket, context: followed }] of reached) {
+    // A message that addressed the agent is a request in its own right: it is assessed, and the assessment decides whether
+    // it opens a ticket or belongs to one already running. Only unaddressed messages join a thread's tickets on arrival,
+    // which is what makes the discussion around a ticket stay with that ticket instead of opening one per remark.
+    const explicit = trigger.addressed !== undefined && filter.fresh === true
+    if (!explicit) for (const [ticketId, { ticket, context: followed }] of reached) {
       this.tickets.addInput(ticket, { id: key('input', ticketId, 'trigger', trigger.id), kind: 'trigger', triggerId: trigger.id, at,
         ...trigger.human ? { human: true } : {}, ...followed ? { context: true } : {} })
     }
-    const fanout = [...reached.keys()], context = fanout.filter(id => reached.get(id)!.context)
-    const disposition = { fanout, ...context.length ? { context } : {}, at }
+    const fanout = explicit ? [] : [...reached.keys()]
+    const context = fanout.filter(id => reached.get(id)!.context)
+    const disposition = { fanout, ...context.length ? { context } : {}, ...explicit && reached.size ? { deferred: [...reached.keys()] } : {}, at }
     this.repo.triggers.saveDisposition(trigger.id, disposition)
     // A person's message that no ticket decides, such as one that reached only tickets a person stopped or that follow the
     // Thread for context, and every bot's, goes to Eval.

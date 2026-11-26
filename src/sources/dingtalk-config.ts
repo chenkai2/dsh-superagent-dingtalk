@@ -6,6 +6,12 @@ export const DingtalkGroupSchema = z.object({
   conversationId: z.string().trim().min(1),
   name: z.string().trim().max(60).optional(),
   listen: z.enum(['mentions', 'all']).default('mentions'),
+  /**
+   * What an addressed message does here. `new` treats it as a request of its own, so the assessment decides whether it opens
+   * a ticket or belongs to one already running; `thread` lets the ticket that follows this conversation take it directly,
+   * which suits a group where one discussion is one piece of work.
+   */
+  dispatch: z.enum(['new', 'thread']).default('new'),
 }).strict()
 export type DingtalkGroup = z.infer<typeof DingtalkGroupSchema>
 

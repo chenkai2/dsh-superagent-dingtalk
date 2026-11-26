@@ -38,7 +38,7 @@ export const dingtalkKind: SourceKind<DingtalkConfig> = {
         en: 'Only a message that addresses one of these names dispatches work; every other message counts as discussion or a follow-up and joins the existing ticket instead of opening one. A message read by dws carries no structured mention, so "@name" in the text is the only signal. Enter the robot\'s display name in the group, or your own name when the group has no robot to address: addressing yourself is then how work is dispatched.' },
       columns: [{ key: 'name', type: 'text', label: { zh: '名字（不含 @）', en: 'Name (without the @)' }, pattern: '.{1,40}' }] },
     { key: 'groups', type: 'rows', label: { zh: '接收的群', en: 'Groups' },
-      hint: { zh: '自动登记：把应用机器人拉进群后，@ 它发一句「启用」（也可以发 开启 / enable / start），本列表会自动加上那个群并回一句确认——只有「能发起工作的钉钉用户」名单里的人发才生效。也可以在这里手选、改接收模式或删除。选“全部消息”时，群里没 @ 机器人的消息也会读到，由策略的接收表决定是否成为候选。',
+      hint: { zh: '「每条 @」决定这个群怎么用：选「新建工单」时群里每条 @ 都是一件新活，由评估判断它属于哪张工单（判不准会回一句说明）；选「并入本群已有工单」时，本群所有 @ 都交给正在跟这个群的那张工单，适合一个群只讨论一件事。\n\n自动登记：把应用机器人拉进群后，@ 它发一句「启用」（也可以发 开启 / enable / start），本列表会自动加上那个群并回一句确认——只有「能发起工作的钉钉用户」名单里的人发才生效。也可以在这里手选、改接收模式或删除。选“全部消息”时，群里没 @ 机器人的消息也会读到，由策略的接收表决定是否成为候选。',
         en: 'Enrolment: add the app robot to a group and address it with "启用" (also 开启, enable or start); the group is added here automatically and the robot answers once. Only a person on the "DingTalk users who may originate work" list can do it. This list also lets you pick, change the receive mode, or remove one. "All" also reads messages that do not address the robot; the Policy admission table decides whether they become candidates.' },
       columns: [
         { key: 'conversationId', type: 'text', label: { zh: '群', en: 'Group' }, pattern: '[^\\s]+',
@@ -77,7 +77,7 @@ export const dingtalkKind: SourceKind<DingtalkConfig> = {
   scope({ meta }, config) {
     if (meta.direct === true) return config.directMessages ? { listened: true, observed: false, row: 'direct' } : { listened: false, reason: 'direct_messages_not_allowed' }
     const group = config.groups.find(item => item.conversationId === meta.conversationId)
-    if (group) return { listened: true, observed: group.listen === 'all', row: group.conversationId }
+    if (group) return { listened: true, observed: group.listen === 'all', row: group.conversationId, fresh: group.dispatch === 'new' }
     return config.otherChats ? { listened: true, observed: false, row: 'other' } : { listened: false, reason: 'chat_not_allowed' }
   },
   channel: {
