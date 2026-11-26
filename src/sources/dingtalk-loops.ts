@@ -100,7 +100,9 @@ async function pollSafely(host: SourceContext, config: DingtalkConfig, tally: { 
   try {
     await pollGroups(host, config, tally)
     tally.last = undefined
-    host.report(HEALTH, { state: 'ready', detail: dwsOf(config).enabled ? 'Reading configured groups' : 'Stream only' })
+    const dws = dwsOf(config)
+    if (dws.enabled) host.report(DWS, { state: 'ready', detail: 'Reading configured groups' })
+    host.report(HEALTH, { state: 'ready', detail: dws.enabled ? 'Reading configured groups' : 'Stream only' })
   } catch (error) {
     tally.failures += 1
     tally.last = error instanceof Error ? error.message : String(error)
@@ -138,7 +140,7 @@ async function runStream(host: SourceContext, signal: AbortSignal): Promise<void
       const trigger = dingtalkTrigger({ ...input, robotCode })
       if (trigger) await host.receive(trigger)
     },
-    report(state, detail) { host.report(HEALTH, { state, detail }) },
+    report(state, detail) { host.report(STREAM, { state, detail }) },
   })
   try {
     await client.start()

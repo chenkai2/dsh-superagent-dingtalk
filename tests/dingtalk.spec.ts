@@ -9,6 +9,8 @@ import { refreshGroupNames, rememberGroup } from '../src/sources/dingtalk-groups
 import { addressedTo, ingestible, readFrom } from '../src/sources/dingtalk-loops.ts'
 import { StreamMessageSchema, dingtalkChannel, dingtalkTime, dingtalkTrigger, dingtalkTriggerId, streamText }
   from '../src/sources/dingtalk-trigger.ts'
+import { settingsPolicy } from '../src/policy.ts'
+import { SettingsSchema } from '../src/policy.ts'
 import type { OutboundMessage } from '../src/core/index.ts'
 import type { SourceContext } from '../src/sources/host.ts'
 
@@ -248,4 +250,18 @@ it('parses the group list a dws read prints, and keeps the stored names when the
   await expect(refreshGroupNames(listing(page))).resolves.toMatchObject({ 'cid/A': '电商 告警通知群', 'cid/old': '老群' })
   // A failed read is not a reason to lose the names the picker already shows.
   await expect(refreshGroupNames(listing('not json'))).resolves.toBe(stored)
+})
+
+it('admits an unaddressed message from an allowed person when the scope says so', () => {
+  // A deployment whose group has no robot to address still needs a way to say "this scope is the request queue".
+  const settings = SettingsSchema.parse({
+    sources: { dingtalk: { enabled: true, config: { groups: [{ conversationId: 'cid/A', listen: 'all' }] } } },
+    policy: { sources: { dingtalk: { allowed: [{ id: 'DXiPuser' }], admission: { 'cid/A': { listedUnaddressed: 'explicit' } } } } },
+  })
+  const sources = { scope: () => ({ listened: true, observed: true, row: 'cid/A' }) }
+  const policy = settingsPolicy(settings, sources as never)
+  const trigger = dingtalkTrigger({ messageId: 'm1', conversationId: 'cid/A', at: '2026-11-26 14:36:31', text: '@陈凯 看一下进度',
+    senderId: 'DXiPuser', human: true, direct: false, mentioned: false })!
+  expect(trigger.addressed).toBeUndefined()
+  expect(policy.gate(trigger, 'dingtalk:cid/A', [])).toMatchObject({ admissible: true, strength: 'explicit' })
 })

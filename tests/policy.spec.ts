@@ -303,14 +303,18 @@ describe('assessment outcomes', () => {
 })
 
 describe('admission table settings', () => {
-  it('refuses an explicit cell for messages that do not address the agent, in the settings and in a submitted Policy', () => {
-    for (const cell of ['listedUnaddressed', 'unlistedUnaddressed']) {
-      const part = { allowed: [], admission: { [CHAT]: { [cell]: 'explicit' } } }
-      expect(() => SettingsSchema.parse({ policy: { sources: { feishu: part } } })).toThrow()
-      expect(() => sources.validatePolicy({ feishu: part })).toThrow()
+  // A scope whose group has no robot to address — a dedicated command group — states that every message there is the
+  // request by setting `listedUnaddressed` to `explicit`. An unlisted sender still cannot make one without addressing.
+  it('accepts an explicit cell for listed senders who do not address the agent, and refuses it for unlisted ones', () => {
+    for (const cell of ['listedUnaddressed', 'unlistedAddressed'] as const) {
+      const part = { allowed: [{ id: 'ou_alice' }], admission: { [CHAT]: { [cell]: 'explicit' } } }
+      expect(SettingsSchema.parse({ policy: { sources: { feishu: part } } }).policy.sources.feishu.admission[CHAT])
+        .toMatchObject({ [cell]: 'explicit' })
+      expect(sources.validatePolicy({ feishu: part }).feishu).toMatchObject({ admission: { [CHAT]: { [cell]: 'explicit' } } })
     }
-    expect(sources.validatePolicy({ feishu: { allowed: [], admission: { [CHAT]: { unlistedAddressed: 'explicit' } } } }).feishu)
-      .toMatchObject({ admission: { [CHAT]: { unlistedAddressed: 'explicit' } } })
+    const part = { allowed: [{ id: 'ou_alice' }], admission: { [CHAT]: { unlistedUnaddressed: 'explicit' } } }
+    expect(() => SettingsSchema.parse({ policy: { sources: { feishu: part } } })).toThrow()
+    expect(() => sources.validatePolicy({ feishu: part })).toThrow()
   })
   it('accepts an explicit candidate whatever the accept mode, which bears only on inferred ones', () => {
     const rules = SettingsSchema.parse({}).policy.rules.filter(rule => rule.enabled)
