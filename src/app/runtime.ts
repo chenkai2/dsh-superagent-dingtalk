@@ -89,7 +89,8 @@ export class Runtime extends Service implements SourceHost {
     const runtime = this
     // The Executor preset reads this to know which MCP servers this installation gives its workers; the list is a setting,
     // so it is read on each use rather than captured here.
-    ctx.provide('superagentWorkerMcp', { enabled: () => this.settings.current().executor.workerMcp })
+    ctx.provide('superagentWorkerMcp', { enabled: () => this.settings.current().executor.workerMcp,
+      plugins: () => this.settings.current().executor.workerPlugins })
     // Lock the state directory before opening the database so another process cannot migrate or write concurrently.
     mkdirSync(machine.stateDir, { recursive: true, mode: 0o700 })
     const compromised = (error: Error) => { this.runtimeHealth.set({ state: 'error', detail: error.message }); this.stopped.abort() }

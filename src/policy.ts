@@ -99,6 +99,12 @@ export const ExecutorConfigSchema = z.object({
    * the Executor with the tools it has always had; a name here mounts that server's client into each worker.
    */
   workerMcp: z.array(z.string().regex(/^[A-Za-z0-9_-]{1,32}$/)).default([]),
+  /**
+   * Plugins an Executor Session also gets, by module name (for example a memory plugin or a search provider). Each is
+   * mounted into the worker's own context, so whatever it brings — tools, services, background work — belongs to that
+   * worker alone, and the plugin decides how its settings and credentials are found.
+   */
+  workerPlugins: z.array(z.string().regex(/^(?:@[a-z0-9-]+\/)?[a-z0-9][a-z0-9._-]*$/)).default([]),
 }).strict()
 export const SourceInstanceSchema = z.object({ enabled: z.boolean().default(true), config: z.record(z.string(), z.unknown()).default({}) }).strict()
 export const SettingsSchema = z.object({

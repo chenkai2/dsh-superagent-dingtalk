@@ -77,9 +77,9 @@ export function ExecutionSettings() {
   const { blocks, environment, sources } = useSettings().settings
   // Keep raw user text (such as separators between blocked commands) in the draft and parse only on save.
   const executor = blocks.executor.value
-  const saved = { ...executor, maxWorkers: String(executor.maxWorkers), blockedCommands: executor.blockedCommands.join(' '), workerMcp: executor.workerMcp.join(' ') }
+  const saved = { ...executor, maxWorkers: String(executor.maxWorkers), blockedCommands: executor.blockedCommands.join(' '), workerMcp: executor.workerMcp.join(' '), workerPlugins: executor.workerPlugins.join(' ') }
   const draft = useBlockDraft('executor', saved, blocks.executor.revision,
-    value => ({ ...value, maxWorkers: numberOf(value.maxWorkers), blockedCommands: value.blockedCommands.split(/[\s,]+/).filter(Boolean), workerMcp: value.workerMcp.split(/[\s,]+/).filter(Boolean) }))
+    value => ({ ...value, maxWorkers: numberOf(value.maxWorkers), blockedCommands: value.blockedCommands.split(/[\s,]+/).filter(Boolean), workerMcp: value.workerMcp.split(/[\s,]+/).filter(Boolean), workerPlugins: value.workerPlugins.split(/[\s,]+/).filter(Boolean) }))
   const value = draft.value
   const edit = (next: Partial<typeof value>) => draft.edit({ ...value, ...next })
   const prepare = useRef<HTMLTextAreaElement>(null)
@@ -114,6 +114,10 @@ export function ExecutionSettings() {
               onChange={event => edit({ prepare: event.target.value })} />
           </Field>
           <EnvironmentVariables groups={environment.variables} sources={sources} onPick={insert} />
+          <Field label={t('workerPlugins')} hint={t('workerPluginsHint')}>
+            <Input className="dt-mono" value={value.workerPlugins} placeholder={t('workerMcpNone')} spellCheck={false}
+              onChange={event => edit({ workerPlugins: event.target.value })} />
+          </Field>
           <Field label={t('workerMcp')} hint={t('workerMcpHint')}>
             <Input className="dt-mono" value={value.workerMcp} placeholder={t('workerMcpNone')} spellCheck={false}
               onChange={event => edit({ workerMcp: event.target.value })} />

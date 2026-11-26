@@ -8,7 +8,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { profileMcpServers, type ProfileMcpServer } from '../app/mcp-servers.ts'
 
 /** The list the orchestrator publishes: which servers this installation gives its workers. */
-export interface WorkerMcpSelection { enabled(): readonly string[] }
+export interface WorkerMcpSelection { enabled(): readonly string[]; plugins(): readonly string[] }
 
 declare module '@deepseek-ai/cordis' {
   interface Context { superagentWorkerMcp: WorkerMcpSelection }
@@ -21,6 +21,20 @@ export const inject = ['agents', 'superagentWorkerMcp']
  * Mounts one client per selected server into the Agent that is starting. A server the profile no longer configures is
  * skipped: its entry would otherwise mount a client that never connects.
  */
+async function mountPlugins(ctx: Context, agent: { ctx: Context }, selection: WorkerMcpSelection): Promise<void> {
+  for (const name of selection.plugins()) {
+    try {
+      // Resolution walks up from this package into the profile, which is where the plugin is installed.
+      const loaded: unknown = await import(name)
+      const plugin = (loaded as { default?: unknown }).default ?? loaded
+      agent.ctx.plugin(plugin as Parameters<Context['plugin']>[0])
+    } catch (error) {
+      // One plugin the profile does not install must not cost the worker the others.
+      ctx.logger.warn('superagent worker plugin %s could not be mounted: %s', name, String(error))
+    }
+  }
+}
+
 async function mount(ctx: Context, agent: { ctx: Context }, selection: WorkerMcpSelection): Promise<void> {
   const names = selection.enabled()
   if (!names.length) return
@@ -39,5 +53,8 @@ async function mount(ctx: Context, agent: { ctx: Context }, selection: WorkerMcp
 /** Cordis plugin: gives each Executor Session the MCP servers the Execution settings name. */
 export function apply(ctx: Context): void {
   const selection = ctx.superagentWorkerMcp as WorkerMcpSelection
-  ctx.on('agent/created', async ({ agent }) => { await mount(ctx, agent, selection) })
+  ctx.on('agent/created', async ({ agent }) => {
+    await mountPlugins(ctx, agent, selection)
+    await mount(ctx, agent, selection)
+  })
 }
