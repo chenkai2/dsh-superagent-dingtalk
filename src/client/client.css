@@ -384,3 +384,4 @@ a.dt-btn, a.dt-btn:hover { text-decoration: none; }
 .dt-picklist { display: flex; flex-direction: column; gap: 6px; }
 .dt-picklist-detail { display: block; color: var(--dsh-text-secondary); font-size: 12px; line-height: 1.4; }
 .dt-picklist-empty { display: block; color: var(--dsh-text-secondary); line-height: 1.5; }
+.dt-picklist-note { margin: 6px 0 0; color: var(--dsh-text-secondary); font-size: 12px; line-height: 1.5; }

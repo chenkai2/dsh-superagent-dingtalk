@@ -29,6 +29,7 @@ export interface Api {
   'GET executor/extras': { response: {
     servers: { name: string; transport: string; target: string }[]
     plugins: { name: string; version?: string; description?: string }[]
+    skipped: { name: string; reason: string }[]
     problem?: string } }
   'POST sources/:id/labels': { response: { added: string[] } }
   'GET sources/:id/check': { response: SourceCheck }

@@ -183,10 +183,11 @@ function routes(runtime: HttpHost): Routes {
     'GET executor/extras': async () => {
       const profile = installedProfileDir()
       const { servers, problem: profileProblem } = profileMcpServers(profile)
-      const { plugins, problem: pluginProblem } = installedPlugins(profile ? join(profile, 'node_modules') : undefined)
+      const { plugins, skipped, problem: pluginProblem } = installedPlugins(profile ? join(profile, 'node_modules') : undefined)
       const problem = profileProblem ?? pluginProblem
       return { servers: [...servers.values()].map(server => ({ name: server.name, transport: server.transport,
-        target: serverTarget(server.config) })).sort((a, b) => a.name.localeCompare(b.name)), plugins, ...problem ? { problem } : {} }
+        target: serverTarget(server.config) })).sort((a, b) => a.name.localeCompare(b.name)), plugins, skipped,
+        ...problem ? { problem } : {} }
     },
     'POST sources/:id/labels': ({ params }) => runtime.settings.refreshLabels(params.id),
     'GET sources/:id/check': async ({ params }) => runtime.settings.check(params.id),

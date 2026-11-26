@@ -399,6 +399,8 @@ const TEXT = {
   prepareCommandHint: ['新工单的目录建好前，在根目录下用 sh 运行一次，执行环境的变量是它的环境变量，例如用 git worktree 把仓库检出到 $DSH_SUPERAGENT_DIR。留空就是空目录。失败时工单显示失败，并附上命令的输出。', 'Runs once with sh in the root before a new Ticket\'s directory exists, with the execution environment\'s variables as its environment, for example to check a repository out to $DSH_SUPERAGENT_DIR with git worktree. Leave it empty for an empty directory. A failure fails the Ticket with the command\'s output.'],
   prepareCommandEmpty: ['留空：空目录', 'Empty: an empty directory'],
   blockedCommands: ['禁止调用的命令', 'Blocked commands'],
+  extrasSkipped: ['已过滤 {{count}} 个不能挂进执行器的插件（本插件自身：挂进去会让执行器再起一个编排器）',
+    'Filtered out {{count}} plugin that cannot run in the Executor (this plugin: it would start a second orchestrator)'],
   extrasPluginsNone: ['你的 profile 里没有声明 DSH composition 的包：先装插件，再回来勾选',
     'No package in this profile declares a DSH composition: install a plugin, then come back'],
   extrasServersNone: ['你的 profile 与用户级 patch 里都没有 mcp-client 配置：在 cordis.patch.yml 里加一条 mcp-client，它就会出现在这里',

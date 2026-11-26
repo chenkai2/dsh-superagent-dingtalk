@@ -122,8 +122,11 @@ export function ExecutionSettings() {
           </Field>
           <EnvironmentVariables groups={environment.variables} sources={sources} onPick={insert} />
           <Field label={t('workerPlugins')} hint={t('workerPluginsHint')}>
-            <PickList label={t('workerPlugins')} options={choices.plugins} value={value.workerPlugins}
-              empty={t('extrasPluginsNone')} onChange={next => edit({ workerPlugins: next })} />
+            <div>
+              <PickList label={t('workerPlugins')} options={choices.plugins} value={value.workerPlugins}
+                empty={t('extrasPluginsNone')} onChange={next => edit({ workerPlugins: next })} />
+              {extras?.skipped?.length ? <p className="dt-picklist-note">{t('extrasSkipped', { count: extras.skipped.length })}</p> : null}
+            </div>
           </Field>
           <Field label={t('workerMcp')} hint={t('workerMcpHint')}>
             <PickList label={t('workerMcp')} options={choices.servers} value={value.workerMcp}

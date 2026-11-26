@@ -92,9 +92,17 @@ export function profileMcpServers(profileDir: string | undefined, homeDir = proc
 /** One installed plugin, as the settings offer it. */
 export interface InstalledPlugin { name: string; version?: string; description?: string }
 
-export function installedPlugins(nodeModules: string | undefined): { plugins: InstalledPlugin[]; problem?: string } {
-  if (!nodeModules) return { plugins: [], problem: 'This installation does not say where its profile is' }
+/** A package the settings do not offer, with the reason it cannot run inside an Executor. */
+export interface SkippedPlugin { name: string; reason: string }
+
+/** This package: mounting it into an Executor would start a second orchestrator over the same state directory. */
+const SELF = '@chenkai114/dsh-superagent-dingtalk'
+
+export function installedPlugins(nodeModules: string | undefined): {
+  plugins: InstalledPlugin[]; skipped: SkippedPlugin[]; problem?: string } {
+  if (!nodeModules) return { plugins: [], skipped: [], problem: 'This installation does not say where its profile is' }
   const names: InstalledPlugin[] = []
+  const skipped: SkippedPlugin[] = []
   const readDir = (dir: string, prefix = ''): void => {
     let entries
     try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
@@ -111,11 +119,12 @@ export function installedPlugins(nodeModules: string | undefined): { plugins: In
         // A renamed leftover copy keeps the original manifest name, so a mismatch means this is not the installed package.
         // A DSH plugin also declares its composition; an ordinary dependency does not.
         if (manifest.name !== name || !manifest.dsh) continue
+        if (name === SELF) { skipped.push({ name, reason: 'this plugin' }); continue }
         names.push({ name, ...manifest.version ? { version: manifest.version } : {},
           ...manifest.description ? { description: manifest.description } : {} })
       } catch { /* Not a package, or one without a readable manifest. */ }
     }
   }
   readDir(nodeModules)
-  return { plugins: names.sort((a, b) => a.name.localeCompare(b.name)) }
+  return { plugins: names.sort((a, b) => a.name.localeCompare(b.name)), skipped }
 }
