@@ -92,8 +92,11 @@ export function sameOrigin(req: Pick<IncomingMessage, 'headers'>, trustedHosts: 
   // other name is refused, because a browser can be made to resolve an attacker's domain to this address. The port is
   // not part of that decision, exactly as the panel's own fence treats a loopback host.
   const bare = host.replace(/:\d+$/, '')
+  // Fail closed: a deployment whose trusted authorities cannot be read trusts nothing beyond loopback.
+  let declared: readonly string[] = []
+  try { declared = trustedHosts } catch { declared = [] }
   const trusted = bare === '127.0.0.1' || bare === 'localhost' || bare === '::1' || bare === '[::1]'
-    || trustedHosts.some(entry => entry === host || entry === bare)
+    || declared.some(entry => entry === host || entry === bare)
   if (!trusted) return false
   const origin = req.headers.origin
   return origin === undefined || origin === `http://${host}` || origin === `https://${host}`
@@ -265,8 +268,12 @@ export function registerHttp(ctx: Context, runtime: HttpHost): () => void {
     ctx.webServer.register({ kind: 'prefix', path: '/orchestrator', handler: async (req, res) => {
       const url = new URL(req.url ?? '/', 'http://localhost')
       if (!url.pathname.startsWith('/orchestrator/api/')) { res.writeHead(404); res.end(); return }
-      if (!sameOrigin(req, runtime.trustedHosts)) { json(res, 403, { error: 'Same-origin management request required' }); return }
       try {
+        // Inside the try, and guarded: a host source that throws must answer with a message and refuse, never escape into the
+        // host's last-resort guard, which answers an empty body the panel can only show as a bare status code.
+        let allowed = false
+        try { allowed = sameOrigin(req, runtime.trustedHosts) } catch { allowed = false }
+        if (!allowed) { json(res, 403, { error: 'Same-origin management request required' }); return }
         await runtime.ready
         const route = match(table, req.method ?? 'GET', url.pathname.slice('/orchestrator/api/'.length).split('/'))
         if (!route) throw new RouteError(404, 'Unknown operation')

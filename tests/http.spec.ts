@@ -10,10 +10,14 @@ import { SetupError } from '../src/setup.ts'
 type Handler = (req: unknown, res: unknown) => Promise<void>
 type Headers = Record<string, string | undefined>
 /** Mount management HTTP routes on a fake web server and return a request helper that includes default panel headers. */
-function serve(runtime: Partial<Record<keyof HttpHost, unknown>>, host = '127.0.0.1', trustedHosts: string[] = []) {
+function serve(runtime: Partial<Record<keyof HttpHost, unknown>>, host = '127.0.0.1',
+  trustedHosts: string[] | (() => string[]) = []) {
   let handler: Handler = async () => {}
   const ctx = { webServer: { host, port: 3082, register: (route: { handler: Handler }) => { handler = route.handler; return () => {} } } }
-  registerHttp(ctx as never, { ready: Promise.resolve(), trustedHosts, ...runtime } as unknown as HttpHost)
+    // The host exposes the trusted authorities as a property; a test needs it to be able to throw like an unbound service.
+  const base = { ready: Promise.resolve(), ...runtime } as Record<string, unknown>
+  Object.defineProperty(base, 'trustedHosts', { get: typeof trustedHosts === 'function' ? trustedHosts : () => trustedHosts })
+  registerHttp(ctx as never, base as unknown as HttpHost)
   return async (method: string, path: string, body?: unknown, headers: Headers = {}) => {
     let status = 0, text = ''
     const chunks = body === undefined ? [] : [Buffer.from(typeof body === 'string' ? body : JSON.stringify(body))]
@@ -87,6 +91,13 @@ it('answers only a same-origin request from the panel, on loopback or a host thi
   expect(() => serve({}, '0.0.0.0')).toThrow('Orchestrator management requires a loopback Web server')
 })
 
+it('answers a host source that throws with a message, not an empty body', async () => {
+  // The host's own last-resort guard turns an escaping throw into an empty 400, which the panel can only show as a status.
+  const call = serve({ sessions: { delivery: async () => 'injected' }, engine: { unsubscribe: () => true },
+  }, '127.0.0.1', () => { throw new Error('service not injected') })
+  const response = await call('GET', 'state', undefined, { host: 'dsh.example.com', 'x-orchestrator-request': '1' })
+  expect(response).toMatchObject({ status: 403, body: { error: 'Same-origin management request required' } })
+})
 it('answers a prompt save that lost a race with 409, and a settings body over 128 KiB with 400', async () => {
   const saves: unknown[] = []
   const call = serve({
