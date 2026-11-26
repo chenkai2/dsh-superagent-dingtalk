@@ -30,17 +30,34 @@ it('finds every mcp-client row a profile mounts, with the transport each one use
         command: dbx-mcp
         args: []
 `)
-  const { servers, problem } = profileMcpServers(dir)
+  const { servers, problem } = profileMcpServers(dir, '')
   expect(problem).toBeUndefined()
   expect([...servers.keys()]).toEqual(['openviking', 'dbx'])
   expect(servers.get('dbx')).toMatchObject({ transport: 'stdio', config: { command: 'dbx-mcp' } })
 })
 
+it('reads the home-level patch too, because a profile composes over it', () => {
+  const home = profile(`- insert:
+    - id: dbx
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: dbx
+        transport: stdio
+        command: dbx-mcp
+`, 'cordis.patch.yml')
+  const dir = profile(`- insert:
+    - id: other-thing
+      name: '@deepseek-ai/dsh-something-else'
+`)
+  // An installation configures its servers once at home level; the profile only adds its own rows.
+  expect([...profileMcpServers(dir, home).servers.keys()]).toEqual(['dbx'])
+})
+
 it('offers nothing, and says why, when the profile cannot be read', () => {
   // A missing directory is a configuration question, not a crash: the settings say what is wrong.
-  expect(profileMcpServers(undefined)).toMatchObject({ problem: expect.stringContaining('profile') })
+  expect(profileMcpServers(undefined, '')).toMatchObject({ problem: expect.stringContaining('profile') })
   const empty = mkdtempSync(join(tmpdir(), 'dsh-profile-'))
-  expect(profileMcpServers(empty).servers.size).toBe(0)
+  expect(profileMcpServers(empty, '').servers.size).toBe(0)
   const broken = profile('name: [unclosed', 'cordis.yml')
-  expect(profileMcpServers(broken).problem).toContain('could not be parsed')
+  expect(profileMcpServers(broken, '').problem).toContain('could not be parsed')
 })

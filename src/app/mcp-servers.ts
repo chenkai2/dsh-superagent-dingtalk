@@ -30,14 +30,17 @@ function collect(value: unknown, found: Map<string, ProfileMcpServer>, seen: Set
  * @param profileDir The profile directory, normally `$DSH_PROFILE_DIR`.
  * @returns The servers by name, and why the file could not be read when it could not.
  */
-export function profileMcpServers(profileDir: string | undefined): { servers: Map<string, ProfileMcpServer>; problem?: string } {
+export function profileMcpServers(profileDir: string | undefined, homeDir = process.env.DSH_HOME): {
+  servers: Map<string, ProfileMcpServer>; problem?: string } {
   const servers = new Map<string, ProfileMcpServer>()
   if (!profileDir) return { servers, problem: 'This installation does not say which profile it runs from' }
-  const files = ['cordis.patch.yml', 'cordis.yml']
+  // A profile composes over the home-level patch, so the servers an installation actually runs usually live there.
+  const dirs = [...homeDir ? [homeDir] : [], profileDir]
+  const files = dirs.flatMap(dir => ['cordis.patch.yml', 'cordis.yml'].map(file => join(dir, file)))
   let read = 0
   for (const file of files) {
     let text: string
-    try { text = readFileSync(join(profileDir, file), 'utf8') } catch { continue }
+    try { text = readFileSync(file, 'utf8') } catch { continue }
     read += 1
     // Cordis's `!!js` tags are unknown here and only appear on rows this function does not read, so tag warnings are noise.
     // A document that does not parse is not: it would silently offer no servers and read as "no MCP configured".
