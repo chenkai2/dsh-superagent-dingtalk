@@ -381,6 +381,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/sources/dingtalk-channel.ts` | The DingTalk Channel: bot-signed Markdown, `sent` or `gone` |
 | `src/sources/dingtalk-check.ts` | The DingTalk probe the settings page runs: `dws`, Stream credentials, group bots, listened groups |
 | `src/sources/dingtalk-groups.ts` | Resolves the operator's groups to names, so a conversation ID is picked rather than typed |
+| `src/app/mcp-servers.ts` | Reads the MCP servers this profile composes, so the Execution settings can name them without copying their transport |
+| `src/executor/worker-mcp.ts` | Mounts the MCP servers the Execution settings name into each Executor Session, keeping their addresses in the profile |
 | `src/sources/dingtalk-enrol.ts` | Group enrolment: a person addresses the app robot with a command, and the group it came from is recorded |
 | `src/sources/feishu-read.ts` | The `feishu/` reads of a Trigger's message, its root, parent and topic, and `feishuThreadContext`, which gives them to assessments with their images |
 | `src/sources/admission-context.ts` | The bounded window an assessment starts from: the first pages of a Trigger's Thread, read through its kind, and the messages around the Trigger |
@@ -423,6 +425,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
 | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
 | `tests/dingtalk.spec.ts` | The DingTalk Source: message normalization, mention detection, and bot-signed Markdown |
+| `tests/mcp-servers.spec.ts` | Reading the MCP servers a profile composes, and what the settings report when it cannot |
 | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |
 | `tests/assessment.spec.ts` | What the MasterAssessor keeps per Eval, and when it lets go |
 | `tests/background.spec.ts` | Waiting for a worker's shell jobs and subagents: an end that woke it, and a host that stops |

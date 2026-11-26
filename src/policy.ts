@@ -94,6 +94,11 @@ export const ExecutorConfigSchema = z.object({
   directory: z.string().trim().refine(path => path === '' || path.startsWith('/'), 'An absolute path, or empty for <stateDir>/work').default(''),
   prepare: z.string().max(LIMITS.prepareCommand).default(''),
   blockedCommands: z.array(CommandNameSchema).default([]),
+  /**
+   * MCP servers this installation's profile configures that an Executor Session also gets, by `serverName`. Empty leaves
+   * the Executor with the tools it has always had; a name here mounts that server's client into each worker.
+   */
+  workerMcp: z.array(z.string().regex(/^[A-Za-z0-9_-]{1,32}$/)).default([]),
 }).strict()
 export const SourceInstanceSchema = z.object({ enabled: z.boolean().default(true), config: z.record(z.string(), z.unknown()).default({}) }).strict()
 export const SettingsSchema = z.object({

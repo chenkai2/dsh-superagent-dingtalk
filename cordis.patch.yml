@@ -82,6 +82,9 @@
             name: '@deepseek-ai/dsh-skill-filesystem'
           - id: tool-skill
             name: '@deepseek-ai/dsh-tool-skill'
+          # Mounts the MCP servers the Execution settings name into this Session; the profile keeps their addresses.
+          - id: worker-mcp
+            name: '@chenkai114/dsh-superagent-dingtalk/worker-mcp'
           - id: compaction
             name: cordis:group
             group: true
