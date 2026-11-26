@@ -2,6 +2,7 @@
 import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
 import type { PromptConfig, Prompts } from './prompts.ts'
 import type { PromptsView, StateView, TicketPageView } from './http.ts'
+import type { WorkerMountFailure } from './mcp-servers.ts'
 import type { HistoryView } from './settings-history.ts'
 import type { OverviewView } from './views/overview.ts'
 import type { SettingsView } from './views/settings.ts'
@@ -30,6 +31,8 @@ export interface Api {
     servers: { name: string; transport: string; target: string; missing?: boolean }[]
     plugins: { name: string; version?: string; description?: string }[]
     skipped: { name: string; reason: string }[]
+    /** Mounts that failed in this process, oldest first, so the panel can say which name did not load and why. */
+    failures: WorkerMountFailure[]
     problem?: string } }
   'POST sources/:id/labels': { response: { added: string[] } }
   'GET sources/:id/check': { response: SourceCheck }

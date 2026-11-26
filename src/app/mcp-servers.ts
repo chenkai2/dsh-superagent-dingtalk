@@ -35,6 +35,75 @@ export function serverTarget(config: Record<string, unknown>): string {
 
 const CLIENT = '@deepseek-ai/dsh-mcp-client'
 
+/** Why a capability an Executor Session asked for did not mount, as the panel words it in both languages. */
+export type WorkerMountFailureCode = 'not-installed' | 'not-configured' | 'refused' | 'profile-unreadable'
+
+/** One plugin or MCP server an Executor Session asked for and did not get. */
+export interface WorkerMountFailure {
+  kind: 'plugin' | 'mcp'
+  name: string
+  code: WorkerMountFailureCode
+  /** The failure's own words, kept for diagnosis with anything credential-shaped removed. */
+  reason: string
+  /** Failed attempts since this name last mounted; a person reads it as "still failing". */
+  attempts: number
+  /** When the latest attempt failed. */
+  at: string
+}
+
+/**
+ * The mounts that failed in this process, oldest first. The panel routes and the mounting hook run in the same host
+ * process, so a module record reaches the panel without a service the plugin would have to own; a restart clears it,
+ * which is also when every mount is attempted again.
+ */
+const failures = new Map<string, WorkerMountFailure>()
+/** What a person acts on is the latest few; a longer list would bury them in a settings page. */
+const MAX_FAILURES = 20
+const MAX_REASON = 300
+
+/** Drop URL query strings: an mcp-client row usually carries its key there, and a connection error quotes the address. */
+function redactReason(reason: string): string {
+  const redacted = reason.replace(/(https?:\/\/[^\s?#]+)\?[^\s]*/gu, '$1?…').trim()
+  return redacted.length > MAX_REASON ? `${redacted.slice(0, MAX_REASON - 1)}…` : redacted
+}
+
+/**
+ * Record that one named capability did not mount.
+ * @param kind Whether the name is an installed plugin or an MCP server.
+ * @param name The module name or `serverName` the settings asked for.
+ * @param code Why it failed, as a code the panel words.
+ * @param reason The failure's own words.
+ */
+export function recordWorkerMountFailure(kind: WorkerMountFailure['kind'], name: string, code: WorkerMountFailureCode,
+  reason: string): void {
+  const id = `${kind}:${name}`
+  const previous = failures.get(id)
+  // Deleting first keeps insertion order chronological, so the cap drops the oldest failure instead of the newest.
+  failures.delete(id)
+  failures.set(id, { kind, name, code, reason: redactReason(reason), attempts: (previous?.attempts ?? 0) + 1,
+    at: new Date().toISOString() })
+  while (failures.size > MAX_FAILURES) failures.delete(failures.keys().next().value!)
+}
+
+/**
+ * Forget a name that mounted, so a fixed path or a corrected row stops being reported.
+ * @param kind Whether the name is a plugin or an MCP server.
+ * @param name The module name or `serverName` that mounted.
+ */
+export function clearWorkerMountFailure(kind: WorkerMountFailure['kind'], name: string): void {
+  failures.delete(`${kind}:${name}`)
+}
+
+/** The failures to show, oldest first. */
+export function workerMountFailures(): WorkerMountFailure[] {
+  return [...failures.values()]
+}
+
+/** Drop the record; a restart loses it too, and tests need one per case. */
+export function resetWorkerMountFailures(): void {
+  failures.clear()
+}
+
 /**
  * The profile this package is installed into, found from its own location: `<profile>/node_modules/<scope>/<package>`.
  * The host does not export `DSH_PROFILE_DIR` to plugins, so the package's own path is the reliable source.

@@ -1,6 +1,7 @@
 /** Execution status view (active Tickets and pause control) and Execution settings group (Executor capacity and workspace environment). */
 import { useRef, useState } from 'react'
 import { TICKET_FILTERS, type TicketFilter } from '../app/api.ts'
+import type { WorkerMountFailure } from '../app/mcp-servers.ts'
 import { LIMITS } from '../limits.ts'
 import { usePoll, type SettingsView, type SourceView, type StateView } from './api.ts'
 import { DisclosureRow, Icon, InfoTip, Input, Pill } from './controls.tsx'
@@ -134,6 +135,9 @@ export function ExecutionSettings() {
             <PickList label={t('workerMcp')} options={choices.servers} value={value.workerMcp}
               empty={t('extrasServersNone')} onChange={next => edit({ workerMcp: next })} />
           </Field>
+          {extras?.failures?.length ? <Field label={t('mountFailures')} hint={t('mountFailuresHint')}>
+            <MountFailures failures={extras.failures} />
+          </Field> : null}
           <Field label={t('blockedCommands')} hint={t('blockedCommandsHint')}>
             <Input className="dt-mono" value={value.blockedCommands} placeholder={t('blockedCommandsNone')} spellCheck={false}
               onChange={event => edit({ blockedCommands: event.target.value })} />
@@ -144,6 +148,20 @@ export function ExecutionSettings() {
     </form>
     <ConfigHistory blocks={['executor', 'pause']} />
   </div>
+}
+
+/**
+ * What an Executor Session asked for and did not get. A mount that fails only in the log is invisible: the settings page
+ * is where a person chose it, so it is where the reason belongs.
+ */
+function MountFailures({ failures }: { failures: readonly WorkerMountFailure[] }) {
+  const { t } = usePanel()
+  return <ul className="dt-mount-failures">{failures.map(failure => <li key={`${failure.kind}:${failure.name}`}>
+    <span className="dt-mono">{failure.name}</span>
+    <span className="dt-mount-failure-why">{t(`mountFailure.${failure.code}`)}
+      {' · '}{t('mountFailureAttempts', { count: String(failure.attempts) })}</span>
+    <small className="dt-picklist-detail">{failure.reason}</small>
+  </li>)}</ul>
 }
 
 /**

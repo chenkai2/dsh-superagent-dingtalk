@@ -145,3 +145,20 @@ it('lists the settings groups stages first, opens each stage\'s group from its s
   await click(tab(zh['tab.settings']))
   expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['promptPart.runtime/work'])
 })
+
+it('says on the Execution settings which plugin or MCP server did not mount, and why, so a log line is not the only trace', async () => {
+  server.mountFailures = [
+    { kind: 'mcp', name: 'dbx', code: 'not-configured', reason: 'the profile no longer configures dbx', attempts: 2,
+      at: '2026-11-26T15:00:00Z' },
+    { kind: 'plugin', name: '@acme/memory', code: 'not-installed', reason: 'Cannot find package', attempts: 1,
+      at: '2026-11-26T15:01:00Z' },
+  ]
+  await mount()
+  await click(zh['tab.execution'])
+  await click(find(zh['tab.settings'], '.dt-status-head button'))
+  const rows = all('.dt-mount-failures li').map(row => row.textContent)
+  expect(rows).toEqual([
+    `dbx${zh['mountFailure.not-configured']} · 已失败 2 次the profile no longer configures dbx`,
+    `@acme/memory${zh['mountFailure.not-installed']} · 已失败 1 次Cannot find package`,
+  ])
+})

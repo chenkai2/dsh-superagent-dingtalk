@@ -1,11 +1,17 @@
-import { expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { z } from 'zod'
 import { registerHttp } from '../src/app/http.ts'
 import { PromptConflict } from '../src/app/prompts.ts'
 import { SettingsConflict } from '../src/app/settings.ts'
 import type { HttpHost } from '../src/app/http.ts'
 import { SettingsSchema } from '../src/policy.ts'
+import { recordWorkerMountFailure, resetWorkerMountFailures } from '../src/app/mcp-servers.ts'
 import { SetupError } from '../src/setup.ts'
+
+afterEach(() => { resetWorkerMountFailures(); vi.unstubAllEnvs() })
 
 type Handler = (req: unknown, res: unknown) => Promise<void>
 type Headers = Record<string, string | undefined>
@@ -97,4 +103,15 @@ it('answers a prompt save that lost a race with 409, and a settings body over 12
   expect(await call('PUT', 'settings/executor', { value, revision: 0 })).toEqual({ status: 400,
     body: { error: `Request exceeds ${128 * 1024} bytes` } })
   expect(saves).toEqual([])
+})
+
+it('reports on the Execution settings the mounts that failed, so a person sees the reason where they chose the name', async () => {
+  // Both layers point at empty directories: what this machine composes must not change the answer.
+  const empty = mkdtempSync(join(tmpdir(), 'dsh-extras-'))
+  vi.stubEnv('DSH_HOME', empty); vi.stubEnv('DSH_PROFILE_DIR', empty)
+  const call = serve({})
+  recordWorkerMountFailure('mcp', 'dbx', 'not-configured', 'the profile no longer configures dbx')
+  const { status, body } = await call('GET', 'executor/extras')
+  expect(status).toBe(200)
+  expect(body.failures).toMatchObject([{ kind: 'mcp', name: 'dbx', code: 'not-configured', attempts: 1 }])
 })
