@@ -34,8 +34,8 @@ export const dingtalkKind: SourceKind<DingtalkConfig> = {
   schema: DingtalkConfigSchema,
   fields: [
     { key: 'groups', type: 'rows', label: { zh: '接收的群', en: 'Groups' },
-      hint: { zh: '把应用机器人拉进群后，在群里 @ 它发一句「启用」，本列表会自动加上那个群；也可以在这里手选、改接收模式或删除。选“全部消息”时，群里没 @ 机器人的消息也会读到，由策略的接收表决定是否成为候选。',
-        en: 'Add the app robot to a group and address it with "enable": the group is added here automatically. This list also lets you pick, change the receive mode, or remove one. "All" also reads messages that do not address the robot; the Policy admission table decides whether they become candidates.' },
+      hint: { zh: '自动登记：把应用机器人拉进群后，@ 它发一句「启用」（也可以发 开启 / enable / start），本列表会自动加上那个群并回一句确认——只有「能发起工作的钉钉用户」名单里的人发才生效。也可以在这里手选、改接收模式或删除。选“全部消息”时，群里没 @ 机器人的消息也会读到，由策略的接收表决定是否成为候选。',
+        en: 'Enrolment: add the app robot to a group and address it with "启用" (also 开启, enable or start); the group is added here automatically and the robot answers once. Only a person on the "DingTalk users who may originate work" list can do it. This list also lets you pick, change the receive mode, or remove one. "All" also reads messages that do not address the robot; the Policy admission table decides whether they become candidates.' },
       columns: [
         { key: 'conversationId', type: 'text', label: { zh: '群', en: 'Group' }, pattern: '[^\\s]+',
           choose: { zh: '选择群', en: 'Choose a group' }, refresh: { zh: '刷新群列表', en: 'Refresh groups' } },

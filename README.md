@@ -71,6 +71,23 @@ dsh plugin --profile superagent add @chenkai114/dsh-superagent-dingtalk
 4. 二选一配收件：Stream 机器人（实时、只收 @）或群机器人 webhook（只发）；
 5. 在**策略**里把能派活的钉钉账号（staffId 或 openDingTalkId）加进允许名单——名单为空时任何请求都不会变成工单。
 
+### 群怎么加进来
+
+你在钉钉里拿不到群的 `openConversationId`，所以不用手填。把**应用机器人**拉进群，然后 @ 它发一条命令：
+
+```
+@你的机器人 启用
+```
+
+也认 `开启`、`enable`、`start`（可带句号或感叹号）。它会把**发命令的这个群**连同群名一起写进接收列表，并在群里回一句确认；默认只接收 @ 机器人的消息。
+
+两条限制：
+
+- 命令必须来自**允许名单**里的人——登记下来的群，后续是以操作者身份去读的。
+- 只对**应用机器人（Stream）**有效：自定义 webhook 机器人只发不收，拿不到群信息。
+
+之后在 DSH 设置 → 钉钉的群行上改「仅 @ / 全部消息」，或直接删掉那一行。
+
 见 [docs/006-deployment.md](docs/006-deployment.md) 的 DingTalk 小节。
 
 ## Setup
