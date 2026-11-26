@@ -4,7 +4,7 @@ import { dwsOf, streamOf, type DingtalkConfig } from './dingtalk-config.ts'
 import { readDwsPage } from './dingtalk-dws.ts'
 import { DingtalkStream } from './dingtalk-stream.ts'
 import { enrolGroup, enrolmentCommand, replyTo } from './dingtalk-enrol.ts'
-import { rememberGroup } from './dingtalk-groups.ts'
+import { refreshGroupNames, rememberGroup } from './dingtalk-groups.ts'
 import { dingtalkTrigger, type DingtalkMessageInput } from './dingtalk-trigger.ts'
 import { pause } from './poll.ts'
 import type { SourceContext } from './host.ts'
@@ -193,9 +193,21 @@ export async function runDingtalk(host: SourceContext, signal: AbortSignal): Pro
       await pause((current ? dwsOf(current).pollSeconds : 60) * 1000, signal)
     }
   }
+  // Group names feed the settings picker, so a person never has to know an ID. They change rarely and a failed
+  // read only leaves the list as it was, so this runs beside the transports without its own health entry.
+  const naming = async () => {
+    while (!signal.aborted) {
+      if (host.config<DingtalkConfig>('dingtalk')) {
+        try { await refreshGroupNames(host, signal) }
+        catch { /* The picker keeps the names it already has. */ }
+      }
+      await pause(300_000, signal)
+    }
+  }
   // Each transport is supervised on its own: losing the Stream must not stop history reads, and the reverse.
   await Promise.all([
     supervise(host, signal, DWS, polling),
     supervise(host, signal, STREAM, () => runStream(host, signal)),
+    naming(),
   ])
 }

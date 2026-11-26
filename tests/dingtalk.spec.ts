@@ -5,7 +5,7 @@ import { sendDingtalk } from '../src/sources/dingtalk-channel.ts'
 import { DingtalkConfigSchema } from '../src/sources/dingtalk-config.ts'
 import { dingtalkKind } from '../src/sources/dingtalk.ts'
 import { enrolGroup, enrolmentCommand } from '../src/sources/dingtalk-enrol.ts'
-import { rememberGroup } from '../src/sources/dingtalk-groups.ts'
+import { refreshGroupNames, rememberGroup } from '../src/sources/dingtalk-groups.ts'
 import { addressedTo, ingestible, readFrom } from '../src/sources/dingtalk-loops.ts'
 import { StreamMessageSchema, dingtalkChannel, dingtalkTime, dingtalkTrigger, dingtalkTriggerId, streamText }
   from '../src/sources/dingtalk-trigger.ts'
@@ -229,4 +229,18 @@ it('answers the same text again in a later run instead of treating it as a dupli
   const first = key('reply', 'assignment-1', '好')
   const second = key('reply', 'assignment-2', '好')
   expect(first).not.toBe(second)
+})
+
+it('parses the group list a dws read prints, and keeps the stored names when the read fails', async () => {
+  const stored = { 'cid/old': '老群' }
+  const state = { get: () => stored, set: (_key: unknown, value: Record<string, string>) => { Object.assign(stored, value) } }
+  const listing = (output: string) => ({
+    commands: { run: async () => output, withSignal: () => ({ run: async () => output }) } as never,
+    config: <C,>() => ({ dwsCli: 'dws' }) as C,
+    state,
+  }) as unknown as SourceContext
+  const page = JSON.stringify({ chats: [{ openConversationId: 'cid/A', name: '电商 告警通知群' }] })
+  await expect(refreshGroupNames(listing(page))).resolves.toMatchObject({ 'cid/A': '电商 告警通知群', 'cid/old': '老群' })
+  // A failed read is not a reason to lose the names the picker already shows.
+  await expect(refreshGroupNames(listing('not json'))).resolves.toBe(stored)
 })

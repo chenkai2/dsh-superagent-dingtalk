@@ -19,8 +19,8 @@ export async function refreshGroupNames(ctx: SourceContext, signal?: AbortSignal
   const config = ctx.config<DingtalkConfig>(SOURCE)
   const commands = ctx.commands.withSignal(signal)
   try {
-    const result = ChatList.parse(await commands.run(dwsOf(config ?? { dwsCli: 'dws' } as DingtalkConfig).cli,
-      ['chat', '+chat-list', '--types', 'group', '--page-size', '100', '-f', 'json']))
+    const result = ChatList.parse(JSON.parse(await commands.run(dwsOf(config ?? { dwsCli: 'dws' } as DingtalkConfig).cli,
+      ['chat', '+chat-list', '--types', 'group', '--page-size', '100', '-f', 'json'])))
     const names = { ...stored, ...Object.fromEntries((result.chats ?? []).filter(chat => chat.name).map(chat => [chat.openConversationId, chat.name!])) }
     ctx.state.set(KV.sources.labels(SOURCE), names)
     return names

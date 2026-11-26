@@ -183,6 +183,8 @@ function RowsField({ field, value, saved, onChange, labels, refreshLabels }: {
   const key = field.columns[0]!
   const savedKeys = new Set((Array.isArray(saved) ? saved as Row[] : []).map(row => row[key.key]))
   const choose = key.type === 'text' && key.choose && Object.keys(labels).length ? localized(t, key.choose) : ''
+  /** A required key that can only be chosen, with no choices yet: adding a row would create one nobody can complete. */
+  const needsList = key.type === 'text' && Boolean(key.choose) && !key.optional && Object.keys(labels).length === 0
   // Exclude options already selected in another row.
   const choices = (id: string) => Object.entries(labels).filter(([option]) => option === id
     || !rows.some(other => other[key.key] === option)).sort(byName)
@@ -220,8 +222,10 @@ function RowsField({ field, value, saved, onChange, labels, refreshLabels }: {
         {key.type === 'text' && key.refresh && refreshLabels && <Button variant="ghost" size="sm" className={refresh.busy ? 'dt-btn-busy'
           : undefined} icon={<Icon name="refresh" />}
           disabled={refresh.busy} aria-busy={refresh.busy} onClick={() => { void refresh.run() }}>{localized(t, key.refresh)}</Button>}
-        <Button variant="ghost" size="sm" icon={<Icon name="plus" />} onClick={() => { setOpen(true); onChange([...rows,
-          blank]) }}>{t('addRow')}</Button>
+        {/* A row whose key can only come from an empty list has nothing to offer, so adding one is refused. */}
+        <Button variant="ghost" size="sm" icon={<Icon name="plus" />} disabled={needsList}
+          title={needsList ? t('chooseNothingYet') : undefined}
+          onClick={() => { setOpen(true); onChange([...rows, blank]) }}>{t('addRow')}</Button>
       </span>
     </div>
     {rows.length > ROWS_SHOWN && <button type="button" className="dt-textlink dt-rows-summary" aria-expanded={open}
@@ -255,12 +259,16 @@ export function SourceField({ field, value, saved, fact, onChange, labels, refre
         onChange={event => onChange(event.target.value === '' ? '' : Number(event.target.value))} />
     </Field>
     case 'text': return <Field label={label} hint={hint} note={localized(t, fact)}>
-      {field.choose && Object.keys(labels).length
-        ? <select className="dt-select" value={String(value ?? '')} onChange={event => onChange(event.target.value)}>
-          <option value="">{localized(t, field.choose)}</option>
-          {value && !labels[String(value)] ? <option value={String(value)}>{String(value)}</option> : null}
-          {Object.entries(labels).sort(byName).map(([option, name]) => <option key={option} value={option}>{name}</option>)}
-        </select>
+      {field.choose
+        ? Object.keys(labels).length
+          ? <select className="dt-select" value={String(value ?? '')} onChange={event => onChange(event.target.value)}>
+            <option value="">{localized(t, field.choose)}</option>
+            {value && !labels[String(value)] ? <option value={String(value)}>{String(value)}</option> : null}
+            {Object.entries(labels).sort(byName).map(([option, name]) => <option key={option} value={option}>{name}</option>)}
+          </select>
+          : <select className="dt-select" value="" disabled>
+            <option value="">{t('chooseNothingYet')}</option>
+          </select>
         : <Input value={String(value ?? '')} readOnly={field.readonly} pattern={field.pattern} spellCheck={false}
           onChange={event => onChange(event.target.value)} />}
     </Field>
