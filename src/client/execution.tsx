@@ -80,7 +80,9 @@ export function ExecutionSettings() {
   const choices = {
     plugins: (extras?.plugins ?? []).map(plugin => ({ value: plugin.name,
       detail: [plugin.version, plugin.description].filter(Boolean).join(' · ') })),
-    servers: (extras?.servers ?? []).map(server => ({ value: server.name, detail: `${server.transport} · ${server.target}` })),
+    servers: (extras?.servers ?? []).map(server => ({ value: server.name,
+      detail: server.missing ? `${server.transport} · ${server.target} · ${t('extrasCommandMissing')}`
+        : `${server.transport} · ${server.target}` })),
   }
   // Keep raw user text (such as separators between blocked commands) in the draft and parse only on save.
   const executor = blocks.executor.value

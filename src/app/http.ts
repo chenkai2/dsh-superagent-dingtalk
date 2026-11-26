@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { z } from 'zod'
 import { THREAD_FILTERS, TICKET_FILTERS, type Api, type ApiResponse, type RouteParams } from './api.ts'
 import { sourceSkills } from './context.ts'
-import { installedPlugins, installedProfileDir, profileMcpServers, serverTarget } from './mcp-servers.ts'
+import { commandMissing, installedPlugins, installedProfileDir, profileMcpServers, serverTarget } from './mcp-servers.ts'
 import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
 import { PromptConflict, SKILL_NAME, SKILL_PREFIX, TEAM_SECTIONS, builtInBase, builtInParts, defaultPrompts, savePrompts, type Prompts }
   from './prompts.ts'
@@ -186,7 +186,8 @@ function routes(runtime: HttpHost): Routes {
       const { plugins, skipped, problem: pluginProblem } = installedPlugins(profile ? join(profile, 'node_modules') : undefined)
       const problem = profileProblem ?? pluginProblem
       return { servers: [...servers.values()].map(server => ({ name: server.name, transport: server.transport,
-        target: serverTarget(server.config) })).sort((a, b) => a.name.localeCompare(b.name)), plugins, skipped,
+        target: serverTarget(server.config), missing: commandMissing(server.config) }))
+        .sort((a, b) => a.name.localeCompare(b.name)), plugins, skipped,
         ...problem ? { problem } : {} }
     },
     'POST sources/:id/labels': ({ params }) => runtime.settings.refreshLabels(params.id),

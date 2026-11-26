@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { expect, it } from 'vitest'
-import { installedPlugins, profileFromPath, profileMcpServers } from '../src/app/mcp-servers.ts'
+import { commandMissing, installedPlugins, profileFromPath, profileMcpServers } from '../src/app/mcp-servers.ts'
 
 const profile = (text: string, file = 'cordis.patch.yml') => {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-profile-'))
@@ -80,4 +80,11 @@ it('finds the profile from a package inside its node_modules, and the plugins in
   const { plugins } = installedPlugins(join(root, 'node_modules'))
   expect(plugins.map(plugin => plugin.name)).toEqual(['@acme/thing', 'plain-plugin'])
   expect(plugins[0]).toMatchObject({ version: '1.2.3' })
+})
+
+it('says when a stdio command is not on this machine, so a moved binary is visible', () => {
+  // An upgrade that relocates a binary leaves an absolute path behind, and the tools simply never appear.
+  expect(commandMissing({ command: '/nonexistent/bin/dbx-mcp' })).toBe(true)
+  expect(commandMissing({ command: 'node' })).toBe(false)
+  expect(commandMissing({ url: 'https://example.test/mcp' })).toBe(false)
 })

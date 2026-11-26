@@ -27,7 +27,7 @@ export interface Api {
   'GET settings': { response: SettingsView }
   /** What the Execution settings can offer by name, without a person typing module names. */
   'GET executor/extras': { response: {
-    servers: { name: string; transport: string; target: string }[]
+    servers: { name: string; transport: string; target: string; missing?: boolean }[]
     plugins: { name: string; version?: string; description?: string }[]
     skipped: { name: string; reason: string }[]
     problem?: string } }

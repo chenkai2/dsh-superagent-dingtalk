@@ -1,5 +1,5 @@
 /** The MCP servers a DSH profile configures, read from the profile's own composition rather than copied into settings. */
-import { readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
@@ -7,6 +7,21 @@ import { parseDocument } from 'yaml'
 
 /** One entry a profile mounts, by the name its tools live under. */
 export interface ProfileMcpServer { name: string; transport: 'stdio' | 'streamable-http' | 'sse'; config: Record<string, unknown> }
+
+/**
+ * Whether a stdio server's command cannot be found, so the panel can say the server is unusable instead of listing an
+ * entry whose tools never appear. An upgrade that moves a binary leaves an absolute path behind, and the failure is
+ * otherwise silent.
+ * @param config The row's configuration.
+ * @returns Whether the command is missing from the filesystem and from PATH.
+ */
+export function commandMissing(config: Record<string, unknown>): boolean {
+  if (typeof config.command !== 'string' || !config.command) return false
+  const command = config.command
+  if (command.includes('/')) return !existsSync(command)
+  const paths = (process.env.PATH ?? '').split(':').filter(Boolean)
+  return !paths.some(dir => existsSync(join(dir, command)))
+}
 
 /** Where a server connects, without the query string that usually carries its key. */
 export function serverTarget(config: Record<string, unknown>): string {
