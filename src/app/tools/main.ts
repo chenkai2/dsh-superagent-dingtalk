@@ -53,6 +53,7 @@ const RouteItemSchema = z.object({
   acknowledgement: z.string().nullish().describe(`accept: one brief sentence of at most ${IM_WORDS} words naming the concrete change and intended result in the source language. It is posted as a reply to the original source on acceptance, so do not quote the source; quote an earlier proposal briefly only when the trigger merely confirms it and the sentence does not already state it. No generic I will handle it.`),
   note: z.string().nullish().describe(`accept and attach: ${RoutingNoteSchema.description ?? ''}`),
   reason: z.string().nullish().describe('ignore and stop: why, at most 500 characters; an ignore needs it.'),
+  decline: z.string().nullish().describe(`ignore: one brief sentence of at most ${IM_WORDS} words in the source language telling the person, in the conversation that asked, that this was received and deliberately not taken up, and why. Send it for anything that addressed the agent; silence reads as the message never arriving.`),
 }).strict()
 type RouteItem = z.infer<typeof RouteItemSchema>
 type Kind = RouteItem['kind']
@@ -65,6 +66,7 @@ const FIELDS: Record<Field, { check: z.ZodType; reads: readonly Kind[]; needs: r
   acknowledgement: { check: AcknowledgementSchema, reads: ['accept'], needs: ['accept'] },
   note: { check: RoutingNoteSchema, reads: ['accept', 'attach'], needs: [] },
   reason: { check: z.string().max(500), reads: ['ignore', 'stop'], needs: ['ignore'] },
+  decline: { check: AcknowledgementSchema, reads: ['ignore'], needs: [] },
 }
 /** Why an item cannot run: a field its kind needs is missing, or one it reads breaks its limit. */
 function invalid(item: RouteItem): string | undefined {
@@ -80,7 +82,7 @@ function invalid(item: RouteItem): string | undefined {
   }
   return undefined
 }
-type Routed = { decision?: DecisionKind; reason: string; ticketId?: string | undefined; triggerIds?: readonly string[] }
+type Routed = { decision?: DecisionKind; reason: string; ticketId?: string | undefined; triggerIds?: readonly string[]; declined?: boolean }
 /**
  * Carry out one routing decision as its Engine command, in a transaction of its own. `decided` holds the Triggers that this
  * call's earlier items decided, with their batches.
@@ -114,7 +116,13 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
     }
     case 'ignore': {
       const decision = host.engine.decide(item.trigger_id, { kind: 'ignore', reason: item.reason! })
-      return { ...fromDecision(decision), triggerIds: decision.triggerIds }
+      // Somebody asked and the answer is no: say so, because a decision nobody can see is indistinguishable from a lost message.
+      if (item.decline) try { host.engine.reply({ purpose: 'decline', triggerId: item.trigger_id, text: item.decline }) }
+      catch (error) {
+        host.context.logger.warn('dsh-superagent could not decline trigger %s: %s', item.trigger_id, String(error))
+        return { ...fromDecision(decision), triggerIds: decision.triggerIds, declined: false }
+      }
+      return { ...fromDecision(decision), triggerIds: decision.triggerIds, ...(item.decline ? { declined: true } : {}) }
     }
   }
 }

@@ -124,6 +124,20 @@ describe('eval', () => {
     expect(h.outbox).toEqual([{ id: key('ack', '1'), channel: trigger('1').channel, text: 'ok', kind: 'acknowledgement', ticketId: ticket.id, purpose: 'acknowledgement' }])
     expect(h.executor.start).toHaveBeenCalledOnce()
   })
+  it('answers a request nobody takes up, in the conversation that asked, without a ticket', async () => {
+    const h = harness()
+    h.engine.receive(trigger('1')); h.pump()
+    // Silence would be indistinguishable from the message never arriving, so a declined request still gets one message.
+    h.engine.reply({ purpose: 'decline', triggerId: '1', text: 'That is another project, so this chat cannot take it.' })
+    h.pump()
+    expect(h.outbox).toEqual([{ id: key('decline', '1'), channel: trigger('1').channel,
+      text: 'That is another project, so this chat cannot take it.', kind: 'reply', purpose: 'decline' }])
+    expect(h.repo.tickets.list()).toEqual([])
+    // Asking twice keeps one message, like every other reply.
+    h.engine.reply({ purpose: 'decline', triggerId: '1', text: 'That is another project, so this chat cannot take it.' })
+    h.pump()
+    expect(h.outbox.filter(message => message.purpose === 'decline')).toHaveLength(1)
+  })
   it('refuses to decide an eval that a later eval replaced, and decides the later one', async () => {
     const h = harness()
     h.engine.receive(trigger('1')); h.pump()

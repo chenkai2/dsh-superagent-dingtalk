@@ -1,6 +1,7 @@
 /** Proactive candidate assessment for the main Session: relays candidate cards, serves bounded context reads, and records outcomes. */
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { z } from 'zod'
+import { UserError } from '../core/index.ts'
 import { reasonText, threadKey, type Assessor, type AssessmentOutcome, type Candidate, type EngineForMainSession,
   type Trigger } from '../core/index.ts'
 import { AdmissionDirectionSchema, RuleAssessmentSchema, assessmentOutcome, directionAllowed, type Settings } from '../policy.ts'
@@ -30,6 +31,8 @@ export const AssessmentSchema = z.object({
   intent_evidence: z.string().trim().min(1).max(700).nullish().describe('For acceptance: the quotes that establish the three facts.'),
   acknowledgement: AcknowledgementSchema.nullish().describe('For acceptance: one sentence in the source language, posted as a reply to the trigger; omit only when a matched rule asks for silence.'),
   reason: z.string().min(1).max(500),
+  // An inferred candidate that addressed the agent still deserves an answer when it is not taken up.
+  decline: z.string().nullish().describe('For ignore: one brief sentence in the source language saying this was received and deliberately not taken up, and why. Send it when the candidate addressed the agent; silence reads as the message never arriving.'),
 }).strict().refine(value => value.decision !== 'accept' || !directionAllowed(value.direction) || !value.rule_assessments.some(rule => rule.matched)
   || !!value.worktree_name, { message: 'Accepted work requires a short English worktree_name', path: ['worktree_name'] })
 
@@ -48,7 +51,7 @@ const NO_CONTEXT = 'This Source gives no Thread context; assess the Trigger\'s o
 /** Host dependencies used by `MasterAssessor`. */
 export interface AssessorHost {
   /** Active evaluations in `Engine` that the assessor reads and decides. */
-  readonly engine: Pick<EngineForMainSession, 'candidate' | 'candidateDelivered' | 'decide'>
+  readonly engine: Pick<EngineForMainSession, 'candidate' | 'candidateDelivered' | 'decide' | 'reply'>
   readonly commands: Commands
   readonly deployment: Deployment
   /** Durable effect queue through which candidate assessments are delivered. */
@@ -275,6 +278,11 @@ export class MasterAssessor implements Assessor {
     let outcome: AssessmentOutcome = assessmentOutcome(result, this.host.settings(), candidate.strength)
     if (outcome.kind === 'accept' && outcome.acknowledgement) outcome = { ...outcome, acknowledgement: checkedImText(outcome.acknowledgement) }
     const decision = this.host.engine.decide(triggerId, { ...outcome, evalId: candidate.evalId })
+    // Somebody asked and the answer is no: say so, because a decision nobody can see is indistinguishable from a lost message.
+    // A decline that cannot be queued leaves the recorded decision as it is; the person then simply gets no message.
+    if (decision.kind === 'ignore' && result.decline) try {
+      this.host.engine.reply({ purpose: 'decline', triggerId, text: result.decline })
+    } catch (error) { if (!(error instanceof UserError)) throw error }
     return { state: decision.kind, ...(decision.ticketId ? { ticket_id: decision.ticketId } : {}), reason: reasonText(decision.reason) }
   }
   /** Aborts any in-flight thread context or repository read commands when the runtime stops. */

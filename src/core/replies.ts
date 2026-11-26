@@ -13,6 +13,9 @@ import { EnginePart } from './part.ts'
  */
 export type ReplyRequest =
   | { purpose: 'acknowledgement'; ticketId: string; triggerId: string; text: string }
+  // A decline answers a message that no ticket holds, so it carries the trigger alone: it exists so that a request
+  // that was deliberately not taken up is answered rather than left silent.
+  | { purpose: 'decline'; triggerId: string; text: string }
   | { purpose: 'answer' | 'result' | 'attention'; ticketId?: string; triggerId?: string; question?: string; text: string }
 /** A queued message: its id, whether it went out, and whether an earlier request had queued it already. */
 export interface Reply { id: string; status: ReplyStatus; reused: boolean }
@@ -34,7 +37,23 @@ export class Replies extends EnginePart {
    * that is not ready, completed, merged, or dropped.
    */
   reply(request: ReplyRequest): Reply {
-    return request.purpose === 'acknowledgement' ? this.acknowledge(request) : this.answer(request)
+    if (request.purpose === 'acknowledgement') return this.acknowledge(request)
+    if (request.purpose === 'decline') return this.decline(request)
+    return this.answer(request)
+  }
+  /**
+   * Queue the message that says a request was deliberately not taken up, in the conversation it was written in. A decline
+   * needs no ticket, because a request nobody accepts never has one, and it is idempotent like every other reply.
+   * @throws UserError when the trigger is unknown or carries no Channel to answer in.
+   */
+  private decline(request: Extract<ReplyRequest, { purpose: 'decline' }>): Reply {
+    const trigger = this.repo.triggers.get(request.triggerId)
+    if (!trigger) throw new UserError('unknownTrigger')
+    if (!trigger.channel) throw new UserError('noChannel')
+    const id = key('decline', trigger.id)
+    const existing = this.options.outbox.status(id)
+    this.options.outbox.send({ id, channel: trigger.channel, text: request.text, kind: 'reply', purpose: 'decline' })
+    return { id, status: this.options.outbox.status(id) ?? 'pending', reused: existing !== undefined }
   }
   /**
    * Queue the acknowledgement an accept carries where the message that started the ticket was written, if it has a Channel
@@ -61,7 +80,7 @@ export class Replies extends EnginePart {
     this.takeUp(ticket.id, trigger.id)
     return { id, status: this.options.outbox.status(id) ?? 'pending', reused: existing !== undefined }
   }
-  private answer(request: Exclude<ReplyRequest, { purpose: 'acknowledgement' }>): Reply {
+  private answer(request: Extract<ReplyRequest, { purpose: 'answer' | 'result' | 'attention' }>): Reply {
     const trigger = request.triggerId ? this.repo.triggers.get(request.triggerId) : undefined
     if (request.triggerId && !trigger) throw new UserError('unknownTrigger')
     const ticket = request.ticketId ? this.require(request.ticketId)
