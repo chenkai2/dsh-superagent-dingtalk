@@ -150,6 +150,24 @@ describe('eval', () => {
     expect(h.repo.triggers.disposition('2')?.fanout).toEqual([])
     expect(h.requests).toHaveLength(2)
   })
+  it('asks which ticket an unaddressed remark belongs to once a command group has more than one', async () => {
+    const h = harness({}, { fresh: true })
+    // Two tickets follow the same group, so a remark that names neither cannot be delivered to both on guesswork.
+    accepted(h, '1', 't1')
+    // A second addressed request opens a second ticket on the same conversation.
+    h.engine.receive({ ...trigger('2'), addressed: 'mention' }); h.pump()
+    h.decide(h.requests.at(-1)!, { kind: 'accept', title: 'Second', scope: 'small', reason: 'requested', acknowledgement: 'ok' })
+    h.engine.receive({ ...trigger('3'), addressed: undefined }); h.pump()
+    expect(h.repo.triggers.disposition('3')?.fanout).toEqual([])
+    expect(h.repo.triggers.disposition('3')?.deferred).toHaveLength(2)
+    // With a single ticket following it the delivery is exact, so no assessment is needed.
+    const single = harness({}, { fresh: true })
+    single.engine.receive(trigger('1')); single.pump()
+    single.decide(single.requests.at(-1)!, { kind: 'accept', title: 'only', scope: 'small', reason: 'requested', acknowledgement: 'ok' })
+    single.engine.receive({ ...trigger('2'), addressed: undefined }); single.pump()
+    expect(single.repo.triggers.disposition('2')?.fanout).toHaveLength(1)
+    expect(single.requests).toHaveLength(1)
+  })
   it('refuses to decide an eval that a later eval replaced, and decides the later one', async () => {
     const h = harness()
     h.engine.receive(trigger('1')); h.pump()

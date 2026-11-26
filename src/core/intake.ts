@@ -50,13 +50,16 @@ export class Intake extends EnginePart {
     // it opens a ticket or belongs to one already running. Only unaddressed messages join a thread's tickets on arrival,
     // which is what makes the discussion around a ticket stay with that ticket instead of opening one per remark.
     const explicit = trigger.addressed !== undefined && filter.fresh === true
-    if (!explicit) for (const [ticketId, { ticket, context: followed }] of reached) {
+    // One ticket following the thread is exact. More than one makes the message ambiguous, and delivering it to all of them
+    // makes every worker decide whether it is theirs; the assessment decides instead, and can tell which one it belongs to.
+    const ambiguous = filter.fresh === true && reached.size > 1
+    if (!explicit && !ambiguous) for (const [ticketId, { ticket, context: followed }] of reached) {
       this.tickets.addInput(ticket, { id: key('input', ticketId, 'trigger', trigger.id), kind: 'trigger', triggerId: trigger.id, at,
         ...trigger.human ? { human: true } : {}, ...followed ? { context: true } : {} })
     }
-    const fanout = explicit ? [] : [...reached.keys()]
+    const fanout = explicit || ambiguous ? [] : [...reached.keys()]
     const context = fanout.filter(id => reached.get(id)!.context)
-    const disposition = { fanout, ...context.length ? { context } : {}, ...explicit && reached.size ? { deferred: [...reached.keys()] } : {}, at }
+    const disposition = { fanout, ...context.length ? { context } : {}, ...(explicit || ambiguous) && reached.size ? { deferred: [...reached.keys()] } : {}, at }
     this.repo.triggers.saveDisposition(trigger.id, disposition)
     // A person's message that no ticket decides, such as one that reached only tickets a person stopped or that follow the
     // Thread for context, and every bot's, goes to Eval.
