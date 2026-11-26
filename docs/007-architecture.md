@@ -380,6 +380,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/sources/dingtalk-read.ts` | The DingTalk thread context reader |
 | `src/sources/dingtalk-channel.ts` | The DingTalk Channel: bot-signed Markdown, `sent` or `gone` |
 | `src/sources/dingtalk-check.ts` | The DingTalk probe the settings page runs: `dws`, Stream credentials, group bots, listened groups |
+| `src/sources/dingtalk-groups.ts` | Resolves the operator's groups to names, so a conversation ID is picked rather than typed |
 | `src/sources/feishu-read.ts` | The `feishu/` reads of a Trigger's message, its root, parent and topic, and `feishuThreadContext`, which gives them to assessments with their images |
 | `src/sources/admission-context.ts` | The bounded window an assessment starts from: the first pages of a Trigger's Thread, read through its kind, and the messages around the Trigger |
 | `src/sources/feishu-image.ts` | Reads a Feishu message's image as an attachment for the assessing Session |

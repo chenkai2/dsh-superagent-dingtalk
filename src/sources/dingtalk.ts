@@ -3,6 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
 import { dingtalkLink, sendDingtalk } from './dingtalk-channel.ts'
 import { checkDingtalk } from './dingtalk-check.ts'
+import { refreshGroupNames } from './dingtalk-groups.ts'
 import { DingtalkConfigSchema, dwsOf, streamOf, type DingtalkConfig } from './dingtalk-config.ts'
 import { runDingtalk } from './dingtalk-loops.ts'
 import { dingtalkThreadContext } from './dingtalk-read.ts'
@@ -36,8 +37,9 @@ export const dingtalkKind: SourceKind<DingtalkConfig> = {
       hint: { zh: '点 dws 读取的群与 Stream 接收的群取交集以外的部分由“其他群”和“接收私聊”决定。选“全部消息”时，群里没 @ 机器人的消息也会读到，由策略的接收表决定是否成为候选。',
         en: 'The groups read by dws and received by Stream. "All" also reads messages that do not address the robot; the Policy admission table decides whether they become candidates.' },
       columns: [
-        { key: 'conversationId', type: 'text', label: { zh: '群 openConversationId', en: 'Group openConversationId' }, pattern: '[^\\s]+' },
-        { key: 'name', type: 'text', label: { zh: '群名', en: 'Name' }, optional: true },
+        { key: 'conversationId', type: 'text', label: { zh: '群', en: 'Group' }, pattern: '[^\\s]+',
+          choose: { zh: '选择群', en: 'Choose a group' }, refresh: { zh: '刷新群列表', en: 'Refresh groups' } },
+        { key: 'name', type: 'text', label: { zh: '群名（可留空）', en: 'Name (optional)' }, optional: true },
         { key: 'listen', type: 'select', label: { zh: '接收', en: 'Receive' }, options: [
           { value: 'mentions', label: { zh: '仅 @', en: '@ only' } }, { value: 'all', label: { zh: '全部消息', en: 'All' } }] },
       ] },
@@ -58,8 +60,10 @@ export const dingtalkKind: SourceKind<DingtalkConfig> = {
     { key: 'bots', type: 'rows', label: { zh: '群机器人（webhook）', en: 'Group robots (webhook)' },
       hint: { zh: '每个群一个自定义机器人，只管发不管收；有加签时填 *。它的回复署名是机器人，不会冒充你。', en: 'One custom robot per group; it only posts and receives nothing. Fill the * when the robot signs its requests. Its messages are signed by the robot and never impersonate the operator.' },
       columns: [
-        { key: 'name', type: 'text', label: { zh: '名字', en: 'Name' }, pattern: '.{1,40}' },
-        { key: 'conversationId', type: 'text', label: { zh: '群 openConversationId', en: 'Group openConversationId' }, pattern: '[^\\s]+' },
+        { key: 'name', type: 'text', label: { zh: '名字（可留空）', en: 'Name (optional)' }, pattern: '.{0,40}', optional: true },
+        { key: 'conversationId', type: 'text', label: { zh: '群（留空=所有群）', en: 'Group (empty = every group)' }, pattern: '[^\\s]*', optional: true,
+          choose: { zh: '选择机器人所在的群', en: 'Choose the group the robot is in' },
+          refresh: { zh: '刷新群列表', en: 'Refresh groups' } },
         { key: 'token', type: 'text', label: { zh: 'access_token', en: 'access_token' }, pattern: '[^\\s]+' },
         { key: 'secret', type: 'text', label: { zh: '*（可选）', en: '* (optional)' }, optional: true },
       ] },
@@ -79,6 +83,7 @@ export const dingtalkKind: SourceKind<DingtalkConfig> = {
     allowed: (address, config) => dingtalkKind.scope!({ meta: { conversationId: address.conversationId ?? '', direct: address.direct === 'true' } }, config).listened,
     send: sendDingtalk, link: dingtalkLink,
   },
+  refreshLabels: (host, signal) => refreshGroupNames(sourceContext(host, dingtalkKind), signal),
   threadContext: dingtalkThreadContext,
   find: query => ({ threads: [], terms: [...new Set(query.match(/cid\/[A-Za-z0-9+/=]+/g) ?? [])] }),
   policy: {

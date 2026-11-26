@@ -11,8 +11,10 @@ export type DingtalkGroup = z.infer<typeof DingtalkGroupSchema>
 
 /** A custom group robot: it posts to its own conversation and needs no application credentials. */
 export const DingtalkBotSchema = z.object({
-  name: z.string().trim().min(1).max(40),
-  conversationId: z.string().trim().min(1),
+  /** Display name and the `@` handle the history read looks for; empty means the group's own name. */
+  name: z.string().trim().max(40).default(''),
+  /** Empty means this robot posts into every conversation that has no robot of its own. */
+  conversationId: z.string().trim().default(''),
   token: z.string().trim().min(1),
   secret: z.string().trim().min(1).optional(),
 }).strict()
@@ -27,7 +29,11 @@ export const DingtalkConfigSchema = z.object({
     .refine(groups => new Set(groups.map(group => group.conversationId)).size === groups.length, 'Duplicate conversation IDs')
     .default([]),
   bots: z.array(DingtalkBotSchema)
-    .refine(bots => new Set(bots.map(bot => bot.conversationId)).size === bots.length, 'Duplicate conversation IDs')
+    .refine(bots => new Set(bots.map(bot => bot.conversationId).filter(Boolean)).size === bots.map(bot => bot.conversationId).filter(Boolean).length,
+      'Duplicate conversation IDs')
+    // Names are optional: two robots without one are not duplicates, and only a filled name can collide with another.
+    .refine(bots => new Set(bots.map(bot => bot.name).filter(Boolean)).size === bots.map(bot => bot.name).filter(Boolean).length,
+      'Duplicate robot names')
     .default([]),
   /** The application robot whose Stream connection receives messages addressed to it. */
   streamClientId: z.string().trim().default(''),

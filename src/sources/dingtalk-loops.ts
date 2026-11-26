@@ -3,6 +3,7 @@ import { KV } from '../kv.ts'
 import { dwsOf, streamOf, type DingtalkConfig } from './dingtalk-config.ts'
 import { readDwsPage } from './dingtalk-dws.ts'
 import { DingtalkStream } from './dingtalk-stream.ts'
+import { rememberGroup } from './dingtalk-groups.ts'
 import { dingtalkTrigger, type DingtalkMessageInput } from './dingtalk-trigger.ts'
 import { pause } from './poll.ts'
 import type { SourceContext } from './host.ts'
@@ -119,7 +120,10 @@ async function runStream(host: SourceContext, signal: AbortSignal): Promise<void
   const client = new DingtalkStream(stream, {
     async message(input, robotCode) {
       const current = host.config<DingtalkConfig>('dingtalk')
-      if (!current || !listensTo(current, input.conversationId, input.direct)) return
+      if (!current) return
+      // Learn the group from the message itself: this needs no dws, and names the picker without a history read.
+      rememberGroup(host, input.conversationId, input.conversationTitle)
+      if (!listensTo(current, input.conversationId, input.direct)) return
       const trigger = dingtalkTrigger({ ...input, robotCode })
       if (trigger) await host.receive(trigger)
     },

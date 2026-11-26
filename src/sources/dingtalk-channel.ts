@@ -53,7 +53,7 @@ async function sendWebhook(bot: WebhookBot, title: string, text: string): Promis
   if (body.errcode !== 0) {
     // 300001 is an invalid token and 310000 a signature mismatch: both are configuration, so the message can never arrive.
     const gone = body.errcode === 300001 || body.errcode === 310000
-    const error = new Error(`DingTalk robot ${bot.name} refused the message: ${body.errmsg ?? 'unknown error'} (${body.errcode ?? response.status})`)
+    const error = new Error(`DingTalk robot ${bot.name || bot.conversationId} refused the message: ${body.errmsg ?? 'unknown error'} (${body.errcode ?? response.status})`)
     if (gone) throw Object.assign(error, { gone: true })
     throw error
   }
@@ -83,7 +83,8 @@ export async function sendDingtalk(host: Pick<SourceContext, 'commands' | 'confi
     // An expired or rejected address falls through to a configured sender instead of dropping the message.
   }
   // 2. A group robot configured for this conversation needs no application credentials.
-  const bot = config?.bots.find(item => item.conversationId === conversationId)
+  // A robot with no group of its own posts into every conversation that has none of its own.
+  const bot = config?.bots.find(item => item.conversationId === conversationId) ?? config?.bots.find(item => !item.conversationId)
   if (bot) {
     try { await sendWebhook(bot, title, text) }
     catch (error) {

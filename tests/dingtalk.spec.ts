@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { sendDingtalk } from '../src/sources/dingtalk-channel.ts'
 import { DingtalkConfigSchema } from '../src/sources/dingtalk-config.ts'
 import { dingtalkKind } from '../src/sources/dingtalk.ts'
+import { rememberGroup } from '../src/sources/dingtalk-groups.ts'
 import { addressedTo, ingestible, readFrom } from '../src/sources/dingtalk-loops.ts'
 import { StreamMessageSchema, dingtalkChannel, dingtalkTime, dingtalkTrigger, dingtalkTriggerId, streamText }
   from '../src/sources/dingtalk-trigger.ts'
@@ -155,4 +156,30 @@ it('keeps reporting the remaining checks when dws is missing', async () => {
   expect(result.items[1]).toMatchObject({ key: 'stream', ok: false })
   expect(result.items[2]).toMatchObject({ key: 'bots', ok: false })
   expect(result.items[3]).toMatchObject({ key: 'groups', ok: true })
+})
+
+it('posts through the robot that names no group for every conversation that has no robot of its own', async () => {
+  const calls: string[] = []
+  vi.stubGlobal('fetch', async (url: string) => { calls.push(url); return { ok: true, json: async () => ({ errcode: 0 }) } as Response })
+  const config = DingtalkConfigSchema.parse({ bots: [{ token: 'default-token' }] })
+  await expect(sendDingtalk(hostWith(config), message())).resolves.toBe('sent')
+  expect(calls[0]).toContain('access_token=default-token')
+})
+
+it('prefers the robot that names the conversation over the one that names none', async () => {
+  const calls: string[] = []
+  vi.stubGlobal('fetch', async (url: string) => { calls.push(url); return { ok: true, json: async () => ({ errcode: 0 }) } as Response })
+  const config = DingtalkConfigSchema.parse({ bots: [{ token: 'default-token' }, { token: 'group-token', conversationId: 'cid/A' }] })
+  await expect(sendDingtalk(hostWith(config), message())).resolves.toBe('sent')
+  expect(calls[0]).toContain('access_token=group-token')
+})
+
+it('learns a group name from a message addressed to the app robot, without reading history', () => {
+  const stored: Record<string, string>[] = []
+  const ctx = { state: { get: () => undefined, set: (_key: unknown, value: Record<string, string>) => { stored.push(value) } } } as unknown as SourceContext
+  rememberGroup(ctx, 'cid/A', '电商 告警通知群')
+  expect(stored[0]).toEqual({ 'cid/A': '电商 告警通知群' })
+  // A direct message carries no title, and a repeated title writes nothing.
+  rememberGroup(ctx, 'cid/B', undefined)
+  expect(stored).toHaveLength(1)
 })
