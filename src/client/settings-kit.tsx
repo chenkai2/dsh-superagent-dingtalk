@@ -197,7 +197,19 @@ function RowsField({ field, value, saved, onChange, labels, refreshLabels }: {
     if (column === key && (savedKeys.has(id) || (!choose && labels[id]))) {
       return <span key={column.key} className={labels[id] ? 'dt-row-label' : 'dt-row-label dt-mono'} title={id}>{labels[id] ?? id}</span>
     }
-    if (column === key && choose) {
+    if (column === key && column.type === 'text' && column.choose) {
+      // The value can only come from a list, so an empty list must not degrade into a box that asks for a raw ID.
+      if (!choose) {
+        const guidance = column.empty ? localized(t, column.empty) : t('chooseNothingYet')
+        return column.optional
+          ? <select key={column.key} className="dt-select" aria-label={localized(t, column.choose)} value={id}
+            onChange={event => change(event.target.value)}>
+            <option value="">{t('anyOfThem')}</option>
+          </select>
+          : <select key={column.key} className="dt-select" aria-label={localized(t, column.choose)} value="" disabled>
+            <option value="">{guidance}</option>
+          </select>
+      }
       return <select key={column.key} className="dt-select" aria-label={choose} required value={id}
         onChange={event => change(event.target.value)}>
         <option value="" disabled>{choose}</option>

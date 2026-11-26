@@ -144,7 +144,7 @@ it('reports dws, the Stream robot, the group bots and the listened groups', asyn
   })
   const result = await dingtalkKind.check!(checkingHost(config, 'dws version v1.0.68\n'))
   expect(result.ok).toBe(true)
-  expect(result.items.map(item => item.key)).toEqual(['dws', 'stream', 'bots', 'groups'])
+  expect(result.items.map(item => item.key)).toEqual(['dws', 'stream', 'bots', 'markers', 'groups'])
   expect(result.items[0]).toEqual({ key: 'dws', ok: true, detail: 'dws · v1.0.68' })
 })
 
@@ -155,9 +155,10 @@ it('keeps reporting the remaining checks when dws is missing', async () => {
   expect(result.items[0]).toMatchObject({ key: 'dws', ok: false })
   expect(result.items[0]!.detail).toContain('ENOENT')
   // A group is enough to listen to it, but without credentials neither a bot nor the Stream is configured.
-  expect(result.items[1]).toMatchObject({ key: 'stream', ok: false })
-  expect(result.items[2]).toMatchObject({ key: 'bots', ok: false })
-  expect(result.items[3]).toMatchObject({ key: 'groups', ok: true })
+  const item = (key: string) => result.items.find(entry => entry.key === key)
+  expect(item('stream')).toMatchObject({ ok: false })
+  expect(item('bots')).toMatchObject({ ok: false })
+  expect(item('groups')).toMatchObject({ ok: true })
 })
 
 it('accepts the Stream alone, and accepts dws alone only when it can also post as the application robot', async () => {

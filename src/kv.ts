@@ -40,6 +40,8 @@ export const KV = {
   dingtalk: { cursor: family<string, [conversation: string]>('dingtalk-cursor:') },
   /** Per-Source resolved display names mapping a named ID (such as a Feishu chat ID) to its display name. */
   sources: { labels: family<Record<string, string>, [source: string]>('source-labels:') },
+  // Bots seen posting in a Source's scopes, keyed by the ID a policy entry needs; a person never types that ID.
+  bots: family<Record<string, string>, [source: string]>('source-bots:'),
   /**
    * GitHub Source: notification cursor and pending retries; per-Issue/PR read cursor shared by notification and polled reads;
    * per-stream cursor, start times by kind, and ETag; default-branch CI state; and per-PR CI fingerprint and revision (`revision`

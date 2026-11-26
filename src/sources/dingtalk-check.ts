@@ -50,6 +50,11 @@ export async function checkDingtalk(commands: Commands, config: DingtalkConfig):
     : { key: 'bots', ok: false, detail: Boolean(stream) || dwsPosts
       ? 'Optional: replies go through the callback address or as the application robot'
       : 'Required: nothing can post a reply yet, so set a token or an application robot code' })
+  // Whose @ counts as dispatching work is the setting people look for and cannot find, so report it up here.
+  const markers = config.mentionNames.map(entry => entry.name)
+  items.push({ key: 'markers', ok: markers.length > 0, detail: markers.length > 0
+    ? markers.map(name => `@${name}`).join(', ')
+    : 'Nothing dispatches work: no @ counts yet' })
   const groups = config.groups.filter(group => group.conversationId)
   const groupsOk = groups.length > 0 || config.otherChats
   items.push(groupsOk

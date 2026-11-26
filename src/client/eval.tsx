@@ -79,7 +79,7 @@ function SourcePart({ source, part, saved, dirty, onChange, reload }: {
   const syncNow = () => { if (dirty) notify(t('syncNeedsSave')); else void run.run() }
   return <div className="dt-part">
     {policy.fields.map(field => <SourceField key={field.key} field={field} value={part[field.key]} saved={saved[field.key]} fact={undefined}
-      labels={source.labels}
+      labels={{ ...source.labels, ...(source.botLabels ?? {}) }}
       onChange={next => onChange({ ...part, [field.key]: next })} />)}
     {sync && <div className="dt-row-buttons">
       <Button variant="outline" size="sm" icon={<Icon name="refresh" />} disabled={run.busy || !sync.ready} onClick={syncNow}>{localized(t,

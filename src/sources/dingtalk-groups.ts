@@ -43,3 +43,19 @@ export function rememberGroup(ctx: SourceContext, conversationId: string, title:
   if (labels[conversationId] === title) return
   ctx.state.set(KV.sources.labels(SOURCE), { ...labels, [conversationId]: title })
 }
+/** How many bots to keep; a group's robots are few, and the list is a picker rather than a record. */
+const BOTS_KEPT = 50
+
+/**
+ * Records a bot seen posting, so the Policy's candidate list offers it by name instead of asking for its ID.
+ * @param ctx The DingTalk Source context.
+ * @param id The sender ID a Policy entry matches.
+ * @param name The sender's display name, absent when the platform reports none.
+ */
+export function rememberBot(ctx: SourceContext, id: string, name: string | undefined): void {
+  if (!id || !name) return
+  const stored = ctx.state.get(KV.bots(SOURCE)) ?? {}
+  if (stored[id] === name) return
+  const entries = Object.entries({ ...stored, [id]: name })
+  ctx.state.set(KV.bots(SOURCE), Object.fromEntries(entries.slice(-BOTS_KEPT)))
+}

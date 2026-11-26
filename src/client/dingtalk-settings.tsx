@@ -14,6 +14,7 @@ function itemCopy(t: T, key: string): { label: string; hint?: string } {
     case 'dws': return { label: t('dingtalkCheckDws'), hint: t('dingtalkCheckDwsHint') }
     case 'stream': return { label: t('dingtalkCheckStream'), hint: t('dingtalkCheckStreamHint') }
     case 'bots': return { label: t('dingtalkCheckBots'), hint: t('dingtalkCheckBotsHint') }
+    case 'markers': return { label: t('dingtalkCheckMarkers'), hint: t('dingtalkCheckMarkersHint') }
     case 'groups': return { label: t('dingtalkCheckGroups'), hint: t('dingtalkCheckGroupsHint') }
     default: return { label: key }
   }

@@ -4,7 +4,7 @@ import { dwsOf, streamOf, type DingtalkConfig } from './dingtalk-config.ts'
 import { readDwsPage } from './dingtalk-dws.ts'
 import { DingtalkStream } from './dingtalk-stream.ts'
 import { enrolGroup, enrolmentCommand, replyTo } from './dingtalk-enrol.ts'
-import { refreshGroupNames, rememberGroup } from './dingtalk-groups.ts'
+import { refreshGroupNames, rememberBot, rememberGroup } from './dingtalk-groups.ts'
 import { dingtalkTrigger, type DingtalkMessageInput } from './dingtalk-trigger.ts'
 import { pause } from './poll.ts'
 import type { SourceContext } from './host.ts'
@@ -72,6 +72,8 @@ async function pollGroups(host: SourceContext, config: DingtalkConfig, tally: { 
     const page = await readDwsPage(host.commands, dws.cli, group.conversationId, readFrom(stored), dws.pageSize)
     let newest = stored
     for (const message of page.messages) {
+      // A robot that posts here is the only place its ID can be learned, so record it for the Policy's candidate list.
+      if (message.sendType === 'robot' && message.senderId) rememberBot(host, message.senderId, message.sender)
       if (!ingestible(message)) continue
       const input: DingtalkMessageInput = {
         messageId: message.messageId,
