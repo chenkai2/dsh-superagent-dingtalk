@@ -13,14 +13,14 @@
 
 ## P0 — 生命周期
 
-### 1. 关闭前把在跑的工单标为中断并回帖 — DONE (8d4ec01)
+### 1. 关闭前把在跑的工单标为中断并回帖 — DONE (ff656cc) — DONE (8d4ec01)
 
 正常退出（SIGTERM/停止）时，`running` 的 assignment 应被标为中断，并在原会话回一句原因。
 现在只有重启后的 `resume()` 处理，正常退出这条路径没人管，用户看到的是「消息发出去了，没下文」。
 
 判据：构造 running assignment → 触发关闭 → 断言状态与回帖各一次（幂等）。
 
-### 2. 重启后对 `blocked` + 有问题的工单补发问题 — DONE (8d4ec01)
+### 2. 重启后对 `blocked` + 有问题的工单补发问题 — DONE (ff656cc) — DONE (8d4ec01)
 
 `resume()` 里 `settled` 分支（报告是 blocked/ready 且有 attention）会保留会话但**不再发任何东西**，
 于是 worker 提出的问题永远到不了人（今晚 `93b99a66` 就是这样）。
@@ -31,7 +31,7 @@
 
 ## P1 — 可见性与验证
 
-### 3. 挂载失败暴露到面板
+### 3. 挂载失败暴露到面板 — DONE (01080a2)
 
 执行器挂插件/MCP 失败目前只在日志（`superagent worker plugin … could not be mounted`）。
 应记入健康项或工单卡片，让人在选择处看到「这个没挂上」。
@@ -54,8 +54,13 @@
 worker 系统提示里出现过「MCP resource servers … list_mcp_resources」与 `mcp__github__*`，
 而它的工具集里没有这些。挂载能力补齐后应复查该段落是否名副其实。
 
-## 已知遗留（不阻塞）
+## 已知边界（接受，不再当缺陷）
 
-- 重启窗口的修复（0.0.33）未真机验证：需在重启后几秒内发消息。
-- worker 提示词与 profile 的环境变量共享（`GIT_CONFIG_GLOBAL`、`PATH`、DBX key）仍是进程级。
-- `93b99a66`：worker 查了 152 个仓确认无「立即参与」，问题已答未收尾。
+- **取消之后可能多说一句**：主会话若在通知已送达后才发 result，撤回不了。已把「被鼓励」降为「忽略一句明确指示」；
+  要零残留需给 relay 加「已被通知」事实字段（`src/app/notices.ts`），出现再补。
+- **`answered` 抑制**：报告之后到达的任何人的消息都被视为在回答，因此重启不再补发该问题。有界（消息仍投给 worker、
+  worker 可再问、面板保留 attention），最坏需「问题从未发出 + 之后来了无关人消息」同时成立。
+- **失败记录是进程级**：按 `kind:name` 归一，另一个 worker 之后挂成功会清掉前一个的失败；面板表达「本进程最近一次尝试」。
+- **`failOnStartupError: true` 的行**：回滚后仍算「已挂载」用于提示词遮蔽。
+- **语言判定两份**：`src/core/replies.ts` 内联一份、`src/infra/text.ts` 一份（PR #2 引入）；core 不 import infra，
+  合并后需补 parity 测试或把谓词下沉到 core 由 infra re-export。
