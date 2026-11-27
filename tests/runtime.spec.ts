@@ -317,6 +317,18 @@ it('accepts silently under a rule that says so, gives the worker the rule proced
   expect(await runTool(runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'result', text: '看到这个问题我试了一下，能复现，修复需要较大改动，已记在 #123。' })).toEqual({ status: 'sent' })
 })
 
+it('tells the chat a dropped report ended its ticket in, so a request that stops is never left silent', async () => {
+  const { ticket, sessionId } = await acceptedTicket(feishu('21', '@bot 取消这个需求吧'))
+  const lark = vi.mocked(Commands.prototype.lark)
+  lark.mockClear()
+  await runTool(sessionId, 'orchestrator_report', { state: 'dropped', summary: '按你的要求结束。\n\n没有改动任何文件。' })
+  expect(runtime.store.tickets.get(ticket.id)).toMatchObject({ ended: expect.objectContaining({ by: 'executor', outcome: 'dropped' }) })
+  await runtime.pump(); await runtime.sendReplies()
+  // The worker sent nothing itself, so the Engine's line is the person's only word; it answers in the ticket's own thread.
+  expect(lark.mock.calls.map(([args]) => args).filter(args => args[1] === '+messages-reply')).toEqual([
+    expect.arrayContaining(['--message-id', 'om_21', '--markdown', '这个工单已结束，没有做任何改动。\n\n按你的要求结束。'])])
+})
+
 it('records worker reports, binds the task PR, ends the ticket on ready without a PR, and relays attention', async () => {
   const { ticket, sessionId } = await acceptedTicket()
   deliveries.mockClear()

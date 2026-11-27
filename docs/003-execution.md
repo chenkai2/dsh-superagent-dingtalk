@@ -92,7 +92,7 @@ Reviews without a body, such as approvals, also arrive as Triggers and can wake 
 ## How a Ticket ends
 
 - **Ready without a pull request:** a `ready` Report ends the Ticket as completed.
-- **Nothing to do:** an Executor that finds no work for a person to act on, such as a request that does not reproduce or is superseded, reports `dropped`. The Ticket ends without a message, unless a matched rule asks for one, and a person's later message on its Threads resumes it.
+- **Nothing to do:** an Executor that finds no work for a person to act on, such as a request that does not reproduce or is superseded, reports `dropped`. The Ticket ends, and the Engine tells the conversation the Ticket started in, in the language of the request, with the first line of the Report's summary: a worker sends nothing itself when it reports, and whether the main Session speaks is a model's choice. That line yields to the main Session's own result for the same Assignment, and a result queued after it replaces one still waiting. A person's later message on the Threads resumes the Ticket.
 ### Pull requests
 
 A Ticket follows the pull request it started from once its Executor reports it. It also follows each pull request opened from its branch once reported by the Executor or found by the GitHub Source. Reopened pull requests are followed again.

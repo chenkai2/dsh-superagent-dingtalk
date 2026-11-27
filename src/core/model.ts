@@ -304,6 +304,11 @@ export interface Ticket {
   follows?: Follow[]
   /** People's questions the worker answered, whose answers the main Session may send. */
   answers?: string[]
+  /**
+   * The result reply the main Session queued for this ticket, and the Assignment it was about. That Assignment's `dropped`
+   * end adds no notice of its own: the person already read this one (see `Replies.announceDropped`).
+   */
+  resultReply?: { at: string; assignmentId?: string }
   createdAt: string
   updatedAt: string
   /** The Triggers it was accepted from: the one that started it, and the batch its Eval held. */
