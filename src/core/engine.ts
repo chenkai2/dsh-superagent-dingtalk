@@ -231,8 +231,9 @@ export class Engine {
    * Record a report on an open ticket's current Assignment. Its question for a person (`attention`) is asked, kept, or
    * cleared (`null` or a `ready` report), and a replaced attention question whose reply has not been sent yet is withdrawn
    * from the outbox. A `blocked` or `failed` report holds back automated inputs until a human message arrives. A `dropped`
-   * report ends the ticket, and a `ready` report ends it: `completed` without followed Threads, else with the `followsDone`
-   * outcome once `followsDone` holds.
+   * report ends the ticket, and tells the conversation it started in that it ended and why, in the request's language: a
+   * worker sends nothing itself when it reports, so that line is the person's only word (see `Replies.announceDropped`). A
+   * `ready` report ends it: `completed` without followed Threads, else with the `followsDone` outcome once `followsDone` holds.
    * @throws UserError for an unknown or ended ticket, an ended assignment, a question that comes with a ready result or an
    * answer, or a question or answer that names a message that is not a person's or did not reach the ticket.
    */

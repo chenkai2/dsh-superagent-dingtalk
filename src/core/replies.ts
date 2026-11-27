@@ -25,11 +25,45 @@ export type ReplyRequest =
 export interface Reply { id: string; status: ReplyStatus; reused: boolean }
 
 /**
+ * Whether text reads as Chinese rather than Japanese, which decides the language of the end notice. `src/infra/text.ts` holds
+ * this rule as `isChinese` for the layers above the core, which the core cannot import; `feat/lifecycle-interrupt` (PR #2) adds
+ * it there, so this file inlines the same test until that lands.
+ */
+// TODO: with PR #2 merged, import `isChinese` and add a parity test for the copy that remains.
+const chinese = (text: string): boolean => /\p{Script=Han}/u.test(text) && !/[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(text)
+/** Grapheme segmentation, so a clip counts the glyphs a reader sees instead of UTF-16 code units. */
+const glyphs = new Intl.Segmenter('en', { granularity: 'grapheme' })
+/**
+ * The longest prefix of `line` that fits `max` glyphs, ended with an ellipsis when it was cut. Slicing by code unit cuts an
+ * emoji, a joined glyph, or a surrogate pair in half, and the person then reads the replacement glyph instead.
+ */
+const clip = (line: string, max: number): string => {
+  const reached = [...glyphs.segment(line)].map(item => item.segment)
+  return reached.length > max ? `${reached.slice(0, max - 1).join('').trimEnd()}…` : line
+}
+/**
+ * The line a `dropped` end adds to the conversation, in the language of the request that started the ticket. A worker that
+ * reports nothing left to do sends no message itself, so this line is the only word the person who asked gets; the report's
+ * summary follows, first line only, because the record keeps the rest.
+ */
+function droppedNotice(request: string, summary: string): string {
+  // CommonMark allows one to six `#` as an ATX heading only before a space, so an issue number or a hashtag stays content.
+  const first = summary.split('\n').map(item => item.trim()).find(Boolean)?.replace(/^#{1,6}\s+/, '') ?? ''
+  const requestChinese = chinese(request)
+  const said = requestChinese ? '这个工单已结束，没有做任何改动。' : 'This ticket has ended, with no changes made.'
+  // A Channel allows an IM message 100 words, and Chinese can approach one word per glyph where English runs several
+  // characters a word, so the Chinese summary is clipped harder: 60 glyphs against 160, each leaving room for the line above.
+  const detail = clip(first, requestChinese ? 60 : 160)
+  return detail ? `${said}\n\n${detail}` : said
+}
+
+/**
  * Replies writes the Engine's messages to Channels through the Outbox port: an acknowledgement, the answer to a person's
- * question, a ticket's result, its question for a person, and the news that an Assignment was interrupted, each only when its
- * rule allows it, under a deterministic id that keeps it from going out twice (idempotent). The Engine routes `reply` here;
- * Tickets asks it for the acknowledgement an accept carries, and Assignments asks it to withdraw a question a report replaced
- * and to ask again the question a restart left open.
+ * question, a ticket's result, its question for a person, the news that an Assignment was interrupted, and the end notice a
+ * `dropped` report owes, each only when its rule allows it, under a deterministic id that keeps it from going out twice
+ * (idempotent). The Engine routes `reply` here; Tickets asks it for the acknowledgement an accept carries, and Assignments
+ * asks it to withdraw a question a report replaced, to ask again the question a restart left open, and to say that a
+ * ticket ended dropped.
  */
 export class Replies extends EnginePart {
   /**
@@ -113,6 +147,27 @@ export class Replies extends EnginePart {
   }
   /** Withdraw a ticket's question for a person from the outbox, unless it went out already. */
   withdrawAttention(attentionId: string): void { this.options.outbox.withdraw(key('attention-reply', attentionId)) }
+  /**
+   * Queue the notice that a ticket ended because its worker reported nothing left to do, in the conversation the ticket
+   * started in: a worker that stops there sends no message, so without this line the person who asked never learns why the
+   * work went quiet. The id belongs to the ticket and that Assignment, so its end tells once however often it is reported or
+   * replayed after a restart, and a later Assignment that ends the same way tells again. A ticket with no Channel to write to
+   * keeps its recorded end alone, as a result does.
+   *
+   * The main Session's own result says more, so this notice gives way to it wherever it can: a result already queued for the
+   * same Assignment keeps this notice out, and one queued while this still waits withdraws it. A result that arrives after this
+   * went out cannot be recalled, so a person may read a second line about the same end; that is the price of never going silent.
+   */
+  announceDropped(ticket: Ticket, assignmentId: string, summary: string): void {
+    if (ticket.resultReply?.assignmentId === assignmentId) return
+    const channel = this.sourceChannel(ticket)
+    // A ticket with no Channel at all is the one end that stays unannounced: there is nowhere to write, and its recorded end
+    // still shows in the panel. Every other path either queues this line or leaves a refusal to read.
+    if (!channel) return
+    const id = key('dropped-notice', ticket.id, assignmentId)
+    if (this.options.outbox.status(id) !== undefined) return
+    this.options.outbox.send({ id, channel, kind: 'notice', ticketId: ticket.id, text: droppedNotice(this.source(ticket)?.text ?? summary, summary) })
+  }
   private acknowledge(request: Extract<ReplyRequest, { purpose: 'acknowledgement' }>): Reply {
     const ticket = this.require(request.ticketId)
     if (!liveTicket(ticket)) throw new UserError('ackEnded')
@@ -155,6 +210,12 @@ export class Replies extends EnginePart {
     const channel = request.purpose === 'answer' ? trigger!.channel : asker?.channel ?? (ticket ? this.sourceChannel(ticket) : undefined)
     if (!channel) throw new UserError('noChannel')
     this.options.outbox.send({ id, channel, text: request.text, kind: 'reply', purpose: request.purpose, ...ticket ? { ticketId: ticket.id } : {} })
+    // A `dropped` end owes a notice of its own (`announceDropped`), and this result says more: recording it keeps that end of
+    // the same Assignment quiet, and withdrawing a notice still waiting keeps this result from following it. One end, one message.
+    if (request.purpose === 'result' && ticket) {
+      if (ticket.ended?.outcome === 'dropped' && attempt) this.options.outbox.withdraw(key('dropped-notice', ticket.id, attempt))
+      else if (!ticket.ended) { ticket.resultReply = { at: this.now(), ...attempt ? { assignmentId: attempt } : {} }; this.repo.tickets.save(ticket) }
+    }
     if (request.purpose === 'answer' && ticket && trigger && ticket.answers?.includes(trigger.id)) {
       ticket.answers = ticket.answers.filter(item => item !== trigger.id)
       this.repo.tickets.save(ticket)

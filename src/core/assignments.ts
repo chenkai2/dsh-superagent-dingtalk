@@ -132,7 +132,12 @@ export class Assignments extends EnginePart {
     const ready = !ticket.follows?.length ? 'completed' : this.tickets.followsDone(ticket)?.outcome
     // A dropped report after a close the ticket deferred ends it as the close did, which its final notice tells.
     const outcome = report.state === 'dropped' ? this.tickets.followsDone(ticket)?.outcome ?? 'dropped' : report.state === 'ready' ? ready : undefined
-    if (outcome) this.tickets.end(ticketId, 'executor', outcome, at)
+    if (outcome) {
+      this.tickets.end(ticketId, 'executor', outcome, at)
+      // A worker that reports nothing left to do sends no message of its own, so a dropped end would leave the person who asked
+      // with no word of what became of the work. The Engine says it, because whether the main Session speaks is a model's choice.
+      if (outcome === 'dropped') this.replies.announceDropped(this.require(ticketId), assignment.id, report.summary)
+    }
     return this.require(ticketId)
   }
   /** The ticket, while it is open and `assignmentId` runs it. */

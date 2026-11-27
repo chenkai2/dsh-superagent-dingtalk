@@ -37,8 +37,13 @@ function harness(policyOverrides: Partial<Policy> = {}, { emit, prepareTicket, f
   const scope: EngineOptions['scope'] = { scope: t => t.meta.blocked ? { listened: false, reason: 'chat not allowed' }
     : t.meta.unloaded ? { listened: false, reason: 'source_not_installed' }
     : { listened: true, observed: false, ...fresh !== undefined ? { fresh } : {} } }
+  let sendFailure: RegExp | undefined
   const queued: EngineOptions['outbox'] = {
-    send: message => { if (!outbox.some(item => item.id === message.id)) outbox.push(message) },
+    // A Channel refuses a message over its limit by throwing from `send`, as the Feishu check in `Outbox.send` does.
+    send: message => {
+      if (sendFailure?.test(message.text)) throw new Error('IM message has 101 words; maximum is 100.')
+      if (!outbox.some(item => item.id === message.id)) outbox.push(message)
+    },
     status: id => outbox.some(item => item.id === id) ? 'pending' : undefined,
     withdraw: id => { withdrawn.push(id) },
   }
@@ -64,6 +69,7 @@ function harness(policyOverrides: Partial<Policy> = {}, { emit, prepareTicket, f
     input.kind === 'trigger' && input.readAt === null ? [input.id] : []))
   const decide = (candidate: Candidate, outcome: Outcome) => engine.decide(candidate.triggers[0]!.id, { ...outcome, evalId: candidate.evalId })
   return { repo, engine, outbox, withdrawn, requests, assessor, executor, delivered, settle, pump, read, decide,
+    failSends: (pattern?: RegExp) => { sendFailure = pattern },
     setVersion: (value: string) => { version = value }, setPaused: (value: boolean) => { paused = value }, tick: (seconds: number) => { clock += seconds } }
 }
 function accepted(h: ReturnType<typeof harness>, id = '1', thread = 't1') {
@@ -895,6 +901,141 @@ describe('worker reports', () => {
     const ticketId = accepted(h).ticketId!
     h.engine.stopTicket(ticketId)
     expect(() => h.engine.report(ticketId, { state: 'progress', summary: 'x' })).toThrow(new UserError('ticketEnded'))
+  })
+})
+describe('the notice a dropped ticket owes', () => {
+  /** Start a ticket from a person's message, so its request text, and therefore the notice's language, is known. */
+  function started(h: ReturnType<typeof harness>, text: string, id = '1', thread = 't1'): string {
+    h.engine.receive(trigger(id, { text, threads: [{ source: 'chat', id: thread }] })); h.pump()
+    const ticketId = h.decide(h.requests.at(-1)!, { kind: 'accept', title: 'Fix', scope: 'small', reason: 'requested', acknowledgement: 'ok' }).ticketId!
+    h.settle()
+    return ticketId
+  }
+  /** The notices queued for one ticket: what the Engine adds to the conversation by itself. */
+  const notices = (h: ReturnType<typeof harness>, ticketId: string) => h.outbox.filter(message => message.ticketId === ticketId && message.kind === 'notice')
+  it('tells the conversation the ticket started in, in the language of the request, with the summary\'s first line', () => {
+    const h = harness()
+    const ticketId = started(h, '取消这个需求吧')
+    h.engine.report(ticketId, { state: 'dropped', summary: '按你的要求结束，没有做改动。\n\n未修改任何文件。' })
+    // A worker that reports dropped sends nothing itself, so this line is the only word the person gets.
+    const assignmentId = h.repo.tickets.get(ticketId)!.assignments[0]!.id
+    expect(notices(h, ticketId)).toEqual([expect.objectContaining({ id: key('dropped-notice', ticketId, assignmentId), channel: trigger('1').channel,
+      text: '这个工单已结束，没有做任何改动。\n\n按你的要求结束，没有做改动。' })])
+  })
+  it('answers a request that does not read as Chinese in English, and clips a long summary to one line', () => {
+    const h = harness()
+    const english = started(h, 'drop this')
+    h.engine.report(english, { state: 'dropped', summary: `${'x'.repeat(200)}\nsecond line` })
+    expect(notices(h, english)[0]!.text).toBe(`This ticket has ended, with no changes made.\n\n${'x'.repeat(159)}…`)
+    // Kana makes Japanese, which is not Chinese: its request gets the English line.
+    const japanese = started(h, 'これをキャンセルしてください', '2', 't2')
+    h.engine.report(japanese, { state: 'dropped', summary: '何もしませんでした。' })
+    expect(notices(h, japanese)[0]!.text).toBe('This ticket has ended, with no changes made.\n\n何もしませんでした。')
+  })
+  it('keeps a summary line that only looks like a heading, and strips a real one', () => {
+    const h = harness()
+    // An issue number and a hashtag have no space after `#`, so CommonMark gives them no heading; dropping the `#` loses content.
+    const issue = started(h, '修一下')
+    h.engine.report(issue, { state: 'dropped', summary: '#123 已由 PR 修复' })
+    expect(notices(h, issue)[0]!.text).toBe('这个工单已结束，没有做任何改动。\n\n#123 已由 PR 修复')
+    const hashtag = started(h, '修一下', '2', 't2')
+    h.engine.report(hashtag, { state: 'dropped', summary: '#hashtag 提一下' })
+    expect(notices(h, hashtag)[0]!.text).toContain('#hashtag 提一下')
+    const heading = started(h, '修一下', '3', 't3')
+    h.engine.report(heading, { state: 'dropped', summary: '## 结论\n其余略' })
+    expect(notices(h, heading)[0]!.text).toBe('这个工单已结束，没有做任何改动。\n\n结论')
+    // Seven `#` is not an ATX heading either.
+    const tooMany = started(h, '修一下', '4', 't4')
+    h.engine.report(tooMany, { state: 'dropped', summary: '#######x' })
+    expect(notices(h, tooMany)[0]!.text).toContain('#######x')
+  })
+  it('clips a long summary on the glyphs a reader counts, never inside an emoji', () => {
+    const h = harness()
+    const emoji = started(h, 'drop this')
+    h.engine.report(emoji, { state: 'dropped', summary: '😀'.repeat(200) })
+    const detail = notices(h, emoji)[0]!.text.split('\n\n')[1]!
+    expect(detail).toBe(`${'😀'.repeat(159)}…`)
+    // A cut surrogate pair reaches the person as U+FFFD, so the text must survive an UTF-8 round trip unchanged.
+    expect(Buffer.from(detail, 'utf8').toString('utf8')).toBe(detail)
+    // A joined family is one glyph: cutting it between code points would leave a bare joiner in the message.
+    const family = started(h, 'drop this', '2', 't2')
+    h.engine.report(family, { state: 'dropped', summary: '👨‍👩‍👧‍👦'.repeat(200) })
+    const joined = notices(h, family)[0]!.text.split('\n\n')[1]!
+    expect(joined).toBe(`${'👨‍👩‍👧‍👦'.repeat(159)}…`)
+    expect(Buffer.from(joined, 'utf8').toString('utf8')).toBe(joined)
+  })
+  it('tells one end once: the id belongs to the ticket and its Assignment, and an ended ticket reports nothing more', () => {
+    const h = harness()
+    const ticketId = started(h, '取消这个需求吧')
+    h.engine.report(ticketId, { state: 'dropped', summary: 'nothing to do' })
+    expect(() => h.engine.report(ticketId, { state: 'dropped', summary: 'nothing to do' })).toThrow(new UserError('ticketEnded'))
+    // A host that stops after the end finds no running Assignment to interrupt, so the end tells nobody twice either.
+    h.engine.assignmentInterrupted(ticketId, h.repo.tickets.get(ticketId)!.assignments[0]!.id)
+    expect(notices(h, ticketId)).toHaveLength(1)
+  })
+  it('says nothing for a ready report that completes a ticket, or a dropped one a merged or closed close ends', () => {
+    const h = harness()
+    const completed = started(h, '修一下')
+    h.engine.report(completed, { state: 'ready', summary: 'done' })
+    expect(h.repo.tickets.get(completed)!.ended).toMatchObject({ outcome: 'completed' })
+    expect(notices(h, completed)).toEqual([])
+    // A close the ticket deferred decides the outcome: a dropped report then ends it as the close did, which its own notice tells.
+    const merged = started(h, '修一下', '2', 't2')
+    h.engine.report(merged, { state: 'progress', summary: 'waiting for the merge' })
+    h.engine.bindThread(merged, { source: 'gh', id: 'pr-9' }, true)
+    h.engine.threadClosed({ source: 'gh', id: 'pr-9' }, 'merged', '2026-09-22T00:00:00Z')
+    h.engine.report(merged, { state: 'dropped', summary: 'nothing left to do' })
+    expect(h.repo.tickets.get(merged)!.ended).toMatchObject({ outcome: 'merged' })
+    expect(notices(h, merged)).toEqual([])
+    // `closed` takes the same branch as `merged`: the Source's close notice tells that end, not this line.
+    const closed = started(h, '修一下', '3', 't3')
+    h.engine.report(closed, { state: 'progress', summary: 'waiting for the review' })
+    h.engine.bindThread(closed, { source: 'gh', id: 'pr-11' }, true)
+    h.engine.threadClosed({ source: 'gh', id: 'pr-11' }, 'closed', '2026-09-22T00:00:02Z')
+    h.engine.report(closed, { state: 'dropped', summary: 'nothing left to do' })
+    expect(h.repo.tickets.get(closed)!.ended).toMatchObject({ outcome: 'closed' })
+    expect(notices(h, closed)).toEqual([])
+  })
+  it('keeps the notice when the main Session\'s result is refused, so one refusal cannot silence both', () => {
+    const h = harness()
+    const ticketId = started(h, '取消这个需求吧')
+    h.engine.report(ticketId, { state: 'dropped', summary: 'cancelled' })
+    expect(notices(h, ticketId)).toHaveLength(1)
+    // The Channel refuses the result for its length: the send throws before the notice is withdrawn, so the end still tells.
+    h.failSends(/too long/)
+    expect(() => h.engine.reply({ purpose: 'result', ticketId, text: 'too long' })).toThrow(/IM message has 101 words/)
+    expect(notices(h, ticketId)).toHaveLength(1)
+    expect(h.withdrawn).toEqual([])
+  })
+  it('tells again when a later Assignment ends the same way, as a resumed ticket starts one', () => {
+    const h = harness()
+    const ticketId = started(h, '取消这个需求吧')
+    h.engine.report(ticketId, { state: 'dropped', summary: 'first' })
+    // A person's message on the ticket's thread resumes it under the same Mandate, with a new Assignment.
+    h.engine.receive(trigger('2')); h.pump()
+    const resumed = h.repo.tickets.get(ticketId)!
+    expect(resumed.ended).toBeUndefined()
+    expect(resumed.assignments).toHaveLength(2)
+    h.engine.report(ticketId, { state: 'dropped', summary: 'second' })
+    const ids = notices(h, ticketId).map(message => message.id)
+    expect(ids).toEqual([key('dropped-notice', ticketId, resumed.assignments[0]!.id), key('dropped-notice', ticketId, resumed.assignments[1]!.id)])
+  })
+  it('stays quiet after the main Session\'s own result, and gives way to one that comes later', () => {
+    const h = harness()
+    // A ticket that follows an open pull request stays live after a ready report, which is when a result reply is allowed.
+    const first = started(h, '取消这个需求吧')
+    h.engine.bindThread(first, { source: 'gh', id: 'pr-9' }, true)
+    h.engine.report(first, { state: 'ready', summary: 'ready' })
+    h.engine.reply({ purpose: 'result', ticketId: first, text: '已经结束，未做改动。' })
+    h.engine.report(first, { state: 'dropped', summary: 'cancelled' })
+    // The person already read the result: the end adds nothing over it.
+    expect(notices(h, first)).toEqual([])
+    // The other order withdraws a notice still queued, so the person reads the main Session's message rather than both.
+    const second = started(h, '取消这个需求吧', '2', 't2')
+    h.engine.report(second, { state: 'dropped', summary: 'cancelled' })
+    expect(notices(h, second)).toHaveLength(1)
+    h.engine.reply({ purpose: 'result', ticketId: second, text: '已经结束，未做改动。' })
+    expect(h.withdrawn).toEqual([key('dropped-notice', second, h.repo.tickets.get(second)!.assignments[0]!.id)])
   })
 })
 describe('outcomes', () => {

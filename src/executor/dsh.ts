@@ -133,7 +133,8 @@ export const batchOf = (host: { store: Pick<Store, 'triggers'> }, ticket: Ticket
 const RESUMED = 'This ticket ended earlier and the message that follows, on its thread, resumed it under the same mandate. If it asks for '
   + 'more within the original scope, inspect the worktree, git history and PR state and continue; if it asks for work beyond that scope or '
   + 'for another ticket, hand it back with orchestrator_trigger_handback and report dropped; if it needs nothing, such as thanks, '
-  + 'report dropped without a message. Report ready when the follow-up is done. Do not repeat completed work.'
+  + 'report dropped: the host tells the conversation the ticket ended, so write the summary\'s first line as what the person '
+  + 'should read. Report ready when the follow-up is done. Do not repeat completed work.'
 const RETRIED = 'A person retried this ticket. Continue the assignment from the current worktree, git history and PR state.'
 /**
  * The notice a person reads in the conversation their ticket started in, in the language of the message that started it as

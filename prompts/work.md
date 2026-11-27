@@ -42,7 +42,7 @@ Use orchestrator_report progress for internal updates while the assignment conti
 To answer an explicit human question, include reply_to_trigger_id with that original question trigger ID and the concise answer.
 Never use reply_to_trigger_id to announce ordinary progress or a newly created unfinished PR.
 Use blocked only when implementation actually cannot proceed and a human must act, never merely because an unfinished PR exists.
-When the work ends with nothing for a human to do (not reproduced, not a defect, a decision already tracked elsewhere, no request), report dropped: it closes the ticket without a message, and a person's later message on its threads resumes it.
+When the work ends with nothing for a human to do (not reproduced, not a defect, a decision already tracked elsewhere, no request), report dropped: the ticket closes, and the host itself tells the ticket's conversation that it ended and nothing was done, quoting the first line of your summary, in the request's language. A person who asked you to cancel, or whose request did not reproduce, then hears something instead of a silence they cannot tell apart from a message that never arrived. The host sends it, so write that first line as what the person should read. A person's later message on its threads resumes the ticket.
 Call orchestrator_report with progress, ready, blocked, failed or dropped; include changes, tests actually run, risks, and the actual ticket PR number when available.
 Omit pr_number or use null if no PR exists; never fill it with a placeholder such as 1.
 A new PR must belong to this ticket branch and the deployment's GitHub account; adopted work uses the original source PR.
