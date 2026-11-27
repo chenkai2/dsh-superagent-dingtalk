@@ -1,5 +1,6 @@
 /** Proactive candidate assessment for the main Session: relays candidate cards, serves bounded context reads, and records outcomes. */
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
 import { UserError } from '../core/index.ts'
 import { reasonText, threadKey, type Assessor, type AssessmentOutcome, type Candidate, type EngineForMainSession,
@@ -11,10 +12,12 @@ import type { Deployment } from '../deployment.ts'
 import { admissionContext } from '../sources/admission-context.ts'
 import { readRepositoryPath } from '../sources/github-read.ts'
 import type { TriggerContext } from '../sources/kind.ts'
+import { decideAddressed } from './addressed.ts'
 import { relatedTickets } from './cards.ts'
 import { textPage } from './context.ts'
 import { AcknowledgementSchema } from './tools/tool.ts'
 import type { Effects } from './effects.ts'
+import type { Store } from './store.ts'
 
 /** Schema for a short lowercase kebab-case English ticket worktree name (1–4 words, at most 32 characters). */
 export const WorktreeNameSchema = z.string().max(32).regex(/^[a-z]+(?:-[a-z0-9]+){0,3}$/, 'Use 1–4 short English words in lowercase kebab-case, at most 32 characters').describe('Meaningful short English ticket name, e.g. fix-plan-color. Translate Chinese titles into English; no Chinese, pinyin or generic ticket names. 1–4 lowercase words in kebab-case, at most 32 characters.')
@@ -57,6 +60,10 @@ export interface AssessorHost {
   readonly deployment: Deployment
   /** Durable effect queue through which candidate assessments are delivered. */
   readonly effects: Pick<Effects, 'enqueue' | 'handle'>
+  /** The record the addressed guard reads: its Triggers, the Policy's bot lists, and the Thread's own words. */
+  readonly store: Pick<Store, 'triggers' | 'settings' | 'read'>
+  /** Where a bot list that hides a person's requests is reported. */
+  readonly logger: Pick<Context['logger'], 'warn'>
   settings(): Settings
   /** Whether processing is paused, which holds candidate deliveries. */
   paused(): boolean
@@ -276,6 +283,20 @@ export class MasterAssessor implements Assessor {
   async decide(triggerId: string, result: z.infer<typeof AssessmentSchema>, signal?: AbortSignal): Promise<{ state: string; ticket_id?: string; reason: string }> {
     const { candidate } = this.evalFor(triggerId)
     signal?.throwIfAborted()
+    // A person who addressed the agent asked for something, so an ignore cannot drop it: the code runs the accept the request
+    // earns, exactly as the routing path does, and both paths decide through `decideAddressed`. Only an inferred candidate is
+    // assessed at all, so this is where its ignore would otherwise record a Decision with no Ticket.
+    const addressed = result.decision === 'ignore'
+      ? decideAddressed({ engine: this.host.engine, store: this.host.store, logger: this.host.logger },
+        candidate.triggers.find(item => item.id === triggerId)!, candidate.evalId)
+      : undefined
+    if (addressed) {
+      if (addressed.kind === 'refused') throw new Error(addressed.reason)
+      // The assessment's own decline cannot apply: an accept carries an acknowledgement, and an answered message with no words
+      // already got its reply from the guard.
+      const decision = addressed.decision
+      return { state: decision.kind, ...(decision.ticketId ? { ticket_id: decision.ticketId } : {}), reason: reasonText(decision.reason) }
+    }
     let outcome: AssessmentOutcome = assessmentOutcome(result, this.host.settings(), candidate.strength)
     if (outcome.kind === 'accept' && outcome.acknowledgement) outcome = { ...outcome, acknowledgement: checkedImText(outcome.acknowledgement) }
     const decision = this.host.engine.decide(triggerId, { ...outcome, evalId: candidate.evalId })

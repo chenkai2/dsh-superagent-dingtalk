@@ -43,8 +43,9 @@ export interface TriggerDisposition {
   /** Rejected by the source scope filter before entering the domain, for the Source's reason. */
   filtered?: Reason
   /**
-   * The tickets it would have reached had the scope not deferred it to assessment: kept so that a message in a group with
-   * several tickets explains itself, and so that whoever reads the record sees where it nearly went.
+   * The open tickets it would have reached had the scope not deferred it to assessment: kept so that a message in a group with
+   * several tickets explains itself, and so that whoever reads the record sees where it nearly went. An ended Ticket is left
+   * out, because it can own nothing and would only blur that account.
    */
   deferred?: string[]
   evalId?: string

@@ -46,7 +46,12 @@ export type AssessmentOutcome =
   | { kind: 'accept'; title: string; scope: string; reason: string | Reason; acknowledgement?: string; rules?: string[]; audit?: Record<string, unknown>;
     name?: string; note?: string;
     /** The project the request named, as a name or alias rather than a path; the resolver decides the project and its basis. */
-    project?: string }
+    project?: string;
+    /**
+     * Marks the accept the code forces for a person's addressed message. The address is the authority to open its Ticket, so the
+     * enabled rules an inferred candidate otherwise needs do not apply; only the addressed guard sets this, never an assessment.
+     */
+    forced?: true }
   | { kind: 'stop'; ticketId: string; reason: string | Reason; audit?: Record<string, unknown> }
 
 /** Semantic judgement. `request` queues the assessment, idempotently per `evalId`; the outcome returns through `Engine.decide`. */
