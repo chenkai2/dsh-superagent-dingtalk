@@ -227,6 +227,35 @@ beforeEach(async () => {
 })
 afterEach(async () => { expect(controller.prompt).not.toHaveBeenCalled(); await runtime?.stop(); vi.restoreAllMocks(); rmSync(directory, { recursive: true, force: true }) })
 
+it('accepts a person\'s addressed request that its assessment tried to ignore', async () => {
+  // The gate admits an addressed message from someone not on the list as an inferred candidate, so it is assessed rather than
+  // routed; the assessment cannot leave it ignored, because the person asked for something. A direct message reaches that path
+  // without a Ticket on its Thread, which intake would otherwise hand to the Ticket's worker.
+  const settings = runtime.store.settings()
+  await runtime.settings.save('policy', { ...settings.policy,
+    sources: { ...settings.policy.sources, feishu: { ...settings.policy.sources.feishu!, admission: { direct: { unlistedAddressed: 'inferred' } } } } },
+    runtime.store.blockRevision('policy'), 'panel')
+  const ask = feishu('2', '@bot 看一下 README 里有没有部署说明', { chat_type: 'p2p', sender_id: 'ou_guest' })
+  await receive(ask)
+  expect(relays(runtime.masterId).at(-1)).toMatchObject({ kind: 'candidate', strength: 'inferred', trigger_id: ask.id })
+  const rules = runtime.store.settings().policy.rules.filter(rule => rule.enabled)
+    .map(rule => ({ rule_id: rule.id, matched: false, reason: 'it only asks a question' }))
+  const decided = await runTool(runtime.masterId, 'orchestrator_eval_decide', { trigger_id: ask.id, decision: 'ignore',
+    rule_assessments: rules, direction: { implementation_requested: false, target_basis: 'undetermined', requires_design_decision: false,
+      evidence: 'it asks whether the README explains deployment' },
+    title: 'Check the README', scope: 'ask', reason: 'a read-only question matches no enabled rule', decline: '这条只是查询，没有改动。' })
+  expect(decided).toMatchObject({ decision: 'accept', ticket: { ticket_id: expect.any(String) } })
+  const created = runtime.store.tickets.get((decided.ticket as { ticket_id: string }).ticket_id)!
+  expect(created).toMatchObject({ title: '看一下 README 里有没有部署说明', origin: expect.objectContaining({ triggerId: ask.id }) })
+  expect(runtime.store.decisions.get(created.decisionId)!.audit).toMatchObject({ acceptedAddressed: true })
+  // The person gets the standard acknowledgement, and the assessment's decline is not sent beside it.
+  expect(runtime.store.replyStatus(key('ack', ask.id))).toBe('sent')
+  const markdown = vi.mocked(Commands.prototype.lark).mock.calls.map(([args]) => args)
+    .filter(args => args.includes('--markdown')).map(args => args[args.indexOf('--markdown') + 1])
+  expect(markdown).toContain('收到：看一下 README 里有没有部署说明')
+  expect(markdown).not.toContain('这条只是查询，没有改动。')
+})
+
 it('relays an explicit member mention as a candidate and creates the ticket, acknowledgement, subscription and worker on accept', async () => {
   const { trigger, ticket, sessionId } = await acceptedTicket()
   const candidate = relays(runtime.masterId).find(item => item.kind === 'candidate')!

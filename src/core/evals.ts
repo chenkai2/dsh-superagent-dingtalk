@@ -148,8 +148,10 @@ export class Evals extends EnginePart {
     if (outcome.kind !== 'stop') this.leftToWorkers(trigger)
     const thread = held ?? this.thread(trigger.threads[0]!)
     const evaluation = held?.evaluating ?? this.directEval(thread, trigger, outcome.kind, outcome.kind === 'stop' ? outcome.ticketId : undefined)
-    // An inferred candidate is accepted only on enabled rules its assessment matched, while assessments may accept.
-    if (outcome.kind === 'accept' && evaluation.strength !== 'explicit' && !this.policy().admitsInferred(outcome.rules ?? [])) {
+    // An inferred candidate is accepted only on enabled rules its assessment matched, while assessments may accept. A forced
+    // accept rests on the person's address instead, so it needs no rule.
+    const forced = outcome.kind === 'accept' && outcome.forced === true
+    if (outcome.kind === 'accept' && evaluation.strength !== 'explicit' && !forced && !this.policy().admitsInferred(outcome.rules ?? [])) {
       throw new UserError('notExplicit')
     }
     return this.decideEval(thread, evaluation, outcome)

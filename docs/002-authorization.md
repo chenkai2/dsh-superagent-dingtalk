@@ -88,7 +88,7 @@ The main Session routes explicit candidates with `orchestrator_route`. One call 
 
 An inferred candidate normally needs a full assessment. There is one shortcut: if its card clearly touches no enabled rule, such as plain chat or unrelated discussion, the main Session may ignore it directly. The Decision records `ignoredFromCard` to distinguish this from a rule assessment. The main Session reads the enabled rules in its Policy prompt section.
 
-Accepting an inferred candidate always requires an assessment. Direct accept refuses a Trigger that the gate did not admit as explicit.
+Accepting an inferred candidate otherwise requires an assessment. Direct accept refuses a Trigger that the gate did not admit as explicit, and one exception runs through both paths: a person's message that addressed the agent is accepted by the code even at inferred strength, because the address is the authority to open its Ticket, not the rule assessment (`audit.acceptedAddressed`, `docs/007`).
 
 ## Accept mode and rules
 

@@ -69,7 +69,9 @@ export class Intake extends EnginePart {
     }
     const fanout = explicit || ambiguous ? [] : [...targets.keys()]
     const context = fanout.filter(id => reached.get(id)!.context)
-    const disposition = { fanout, ...context.length ? { context } : {}, ...(explicit || ambiguous) && reached.size ? { deferred: [...reached.keys()] } : {}, at }
+    // Only a live Ticket could own the message, so an ended one is not listed among the Tickets it nearly reached.
+    const deferred = [...reached].filter(([, entry]) => liveTicket(entry.ticket)).map(([id]) => id)
+    const disposition = { fanout, ...context.length ? { context } : {}, ...(explicit || ambiguous) && deferred.length ? { deferred } : {}, at }
     this.repo.triggers.saveDisposition(trigger.id, disposition)
     // A person's message that no ticket decides, such as one that reached only tickets a person stopped or that follow the
     // Thread for context, and every bot's, goes to Eval.

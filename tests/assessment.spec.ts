@@ -38,6 +38,10 @@ function setup(strength: 'explicit' | 'inferred' = 'inferred', bodies = Array.fr
   let engine!: Engine
   const host: AssessorHost = {
     get engine() { return engine }, commands, deployment: testDeployment(), settings: () => SettingsSchema.parse({}),
+    // These Triggers never address the agent, so the addressed guard reads nothing here; the stubs keep the host whole.
+    store: { triggers: repo.triggers, settings: () => SettingsSchema.parse({}),
+      read: { lastWordsOnThread: () => undefined } as unknown as AssessorHost['store']['read'] },
+    logger: { warn: () => {} },
     threadContext: threadContext ?? (trigger => sources.threadContext(trigger)),
     effects: { enqueue: () => {}, handle: () => {} }, paused: () => false, deliver: async () => {}, candidateCard: async candidate => ({ eval_id: candidate.evalId }),
   }

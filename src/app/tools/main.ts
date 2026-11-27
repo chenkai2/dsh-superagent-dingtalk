@@ -1,14 +1,13 @@
 /** Main Session tools for routing triggers, assessing candidates, sending replies, and updating settings and prompts. */
-import { createHash } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { z } from 'zod'
 import { UserError, followupOwners, key, learnProjectAlias, liveTicket, readLearnedProjects, reasonText, threadKey, type Decision, type DecisionKind,
   type EngineForMainSession, type EngineForPeople, type Trigger } from '../../core/index.ts'
 import { KV } from '../../kv.ts'
-import { IM_WORDS, NOTE_WORDS, isChinese, wordCount } from '../../infra/text.ts'
-import { actorAliases, listedBot } from '../../policy.ts'
+import { IM_WORDS, NOTE_WORDS, wordCount } from '../../infra/text.ts'
 import { AssessmentSchema, EvalReadSchema, WorktreeNameSchema, type MasterAssessor } from '../assessment.ts'
+import { decideAddressed } from '../addressed.ts'
 import { ticketCard } from '../cards.ts'
 import { PromptConfigSchema, savePrompts, type Prompts } from '../prompts.ts'
 import { currentProjectIndex } from '../projects.ts'
@@ -91,70 +90,6 @@ function invalid(item: RouteItem): string | undefined {
 type Routed = { decision?: DecisionKind; reason: string; ticketId?: string | undefined; triggerIds?: readonly string[]; declined?: boolean
   /** Set when an `ignore` of an addressed message ran as an accept, so the caller sees the route decided it, not the model. */
   acceptedAddressed?: boolean }
-/** Why an addressed message could not become the accept it asked for; the Engine's own reason follows it. */
-const NOT_ACCEPTED = 'It addressed the agent, so it is a request, but no ticket was created'
-/**
- * Whether the conversation this message belongs to speaks Chinese. The message's own text decides when it has any, and a
- * message with no words carries no language, so the newest person's message with words before it on the same Thread does.
- * Only a Thread that holds no such message falls back, and then the answer is English as a stable default: the host's text
- * is bilingual, so nothing else picks a side for a conversation that has not spoken yet.
- */
-function speaksChinese(host: MainToolsHost, trigger: Trigger): boolean {
-  if (trigger.text.trim() !== '') return isChinese(trigger.text)
-  const primary = trigger.threads[0]
-  if (!primary) return false
-  // The Store finds that message by itself, so bots and messages without words between it and this Trigger do not hide it.
-  const last = host.store.read.lastWordsOnThread(threadKey(primary), { at: trigger.at, id: trigger.id })
-  return last ? isChinese(last.text) : false
-}
-/**
- * Answer an addressed message that holds no words, in the conversation that wrote it. A person who mentioned the agent gets
- * an answer even when there is nothing to carry out, in the language that conversation speaks.
- * @returns whether the reply was queued; a message with no Channel cannot receive one.
- */
-function answerWithoutWords(host: MainToolsHost, trigger: Trigger, chinese: boolean): boolean {
-  try {
-    host.engine.reply({ purpose: 'decline', triggerId: trigger.id,
-      text: chinese ? '这条消息只有 @ 提及，没有可执行的内容。' : 'This message is only a mention, with nothing to act on.' })
-    return true
-  } catch (error) {
-    host.context.logger.warn('dsh-superagent could not answer trigger %s, which holds no words: %s', trigger.id, String(error))
-    return false
-  }
-}
-/**
- * The one mention at the very start of a message is its address, and only that one is dropped. Whose mention it is stays
- * unknown here: the Trigger records that the agent was mentioned, not which text was its mention, so a message that opens by
- * addressing someone else and then the agent keeps the second one in its title.
- */
-const ADDRESS = /^\s*(?:<@[^>\n]*>|@[\p{L}\p{N}_.-]+)/u
-/**
- * The request's own words as an accepted ticket's title: the address removed, whitespace collapsed and cut to the `accept`
- * title limit. A message may address the agent on a line of its own, so the title is the first line that is not empty after
- * that, and a message that is only a mention keeps its whole text rather than becoming an empty title. Mentions after the
- * address stay: they name the people and things the request is about.
- */
-function addressedTitle(text: string): string {
-  const body = text.replace(ADDRESS, ' ')
-  const title = body.split('\n').map(line => line.replace(/\s+/g, ' ').trim()).find(Boolean) ?? text.replace(/\s+/g, ' ').trim()
-  // The limit counts UTF-16 code units, so a cut inside a surrogate pair would leave the title with half a glyph.
-  return title.slice(0, 200).replace(/[\uD800-\uDBFF]$/, '')
-}
-/**
- * The acknowledgement an addressed accept posts: the request named in the conversation's language, kept within the IM word
- * limit that every outbound message must satisfy. Without the cut, a long first line would fail its delivery on every retry.
- */
-function addressedAcknowledgement(chinese: boolean, title: string): string {
-  const prefix = chinese ? '收到：' : 'Received: '
-  if (wordCount(prefix + title) <= IM_WORDS) return prefix + title
-  const chars = Array.from(title)
-  const fits = (length: number): boolean => wordCount(`${prefix}${chars.slice(0, length).join('')}…`) <= IM_WORDS
-  // Every length is tried because the count is not monotone in it: a longer text can merge segments and count fewer words
-  // (`我会` is two, `我会去` one), so a search that stops at the first length that does not fit gives up glyphs it could quote.
-  let best = 0
-  for (let length = 1; length <= chars.length; length++) if (fits(length)) best = length
-  return `${prefix}${chars.slice(0, best).join('')}…`
-}
 /**
  * Carry out one routing decision as its Engine command, in a transaction of its own. `decided` holds the Triggers that this
  * call's earlier items decided, with their batches.
@@ -187,49 +122,23 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
       return { ...fromDecision(decision), triggerIds: decision.triggerIds }
     }
     case 'ignore': {
-      // A person who mentioned the agent asked for something, so the code never lets an ignore drop it: it runs the accept the
-      // trigger already supplies a title and acknowledgement for. Model guidance alone cannot hold this rule, because whether
-      // a message matches a rule is a judgment about the rules, while whether a person asked is a fact about the message.
-      // `addressed` alone is not that fact: a bot's mention is an inferred candidate the rules decide, so it stays ignorable,
-      // and a sender the Source lists as a bot is one whatever the Source reports about `human` (docs/007, docs/008).
+      // A person who mentioned the agent asked for something, so the code never lets an ignore drop it: the shared guard runs
+      // the accept the trigger supplies a title and acknowledgement for, and answers a message with no words. Model guidance
+      // alone cannot hold this, because whether a message matches a rule is a judgment about the rules, while whether a person
+      // asked is a fact about the message.
       const trigger = host.store.triggers.get(item.trigger_id)
-      const bot = trigger?.human && trigger.addressed
-        ? listedBot(host.store.settings(), trigger.actor, actorAliases(trigger.meta)) : undefined
-      // The bots list is per Source, so the report names the Source and the entry that matched: a person's id typed there
-      // would make that person's requests silently ignorable and nothing else about the message would reveal it.
-      if (trigger && bot) host.context.logger.warn('dsh-superagent takes trigger %s from %s on %s for a bot message, because that '
-        + 'Source\'s bots list names "%s": remove that entry from this Source\'s bots if the sender is a person',
-        trigger.id, trigger.actor.id, trigger.source, bot.name ?? bot.id)
-      if (trigger?.human && trigger.addressed && !bot) {
-        const chinese = speaksChinese(host, trigger)
-        const title = addressedTitle(trigger.text)
-        // A message whose whole body is whitespace or missing asks for nothing, and a ticket with no title would hide in every
-        // list. Recording it as ignored also ends its Eval, which a refusal would leave to time out; the answer tells the
-        // person it was read, in the language the conversation speaks.
-        if (title === '') {
-          const decision = host.engine.decide(item.trigger_id, { kind: 'ignore', reason: { code: 'noWords' } })
-          return { ...fromDecision(decision), triggerIds: decision.triggerIds, declined: answerWithoutWords(host, trigger, chinese) }
+      const addressed = trigger && decideAddressed({ engine: host.engine, store: host.store, logger: host.context.logger }, trigger)
+      if (addressed?.kind === 'refused') return { refused: addressed.reason }
+      if (addressed?.kind === 'accept') {
+        const decision = addressed.decision
+        if (addressed.replayed) {
+          return { decision: 'accept', reason: `Already accepted as ${decision.ticketId}; title and acknowledgement unchanged`,
+            ticketId: decision.ticketId, acceptedAddressed: true, triggerIds: decision.triggerIds }
         }
-        const acknowledgement = addressedAcknowledgement(chinese, title)
-        const before = host.store.triggers.disposition(item.trigger_id)?.decisionId
-        try {
-          const decision = host.engine.decide(item.trigger_id, { kind: 'accept', title, scope: title, reason: { code: 'explicitRouted' },
-            acknowledgement,
-            name: `work-${createHash('sha1').update(item.trigger_id).digest('hex').slice(0, 6)}`,
-            // Recorded on the Decision, so the fallback stays visible after the tool result is gone.
-            audit: { acceptedAddressed: true } })
-          // A Decision that created no ticket cannot answer the request; nothing else can either, so say so.
-          if (decision.kind !== 'accept' || !decision.ticketId) return { refused: `${NOT_ACCEPTED}: ${reasonText(decision.reason)}` }
-          // A Decision that existed before keeps its title and acknowledgement, as any replayed accept does.
-          if (decision.id === before) {
-            return { decision: 'accept', reason: `Already accepted as ${decision.ticketId}; title and acknowledgement unchanged`,
-              ticketId: decision.ticketId, acceptedAddressed: true, triggerIds: decision.triggerIds }
-          }
-          return { ...fromDecision(decision), acceptedAddressed: true, triggerIds: decision.triggerIds }
-        } catch (error) {
-          if (error instanceof UserError) return { refused: `${NOT_ACCEPTED}: ${error.message}` }
-          throw error
-        }
+        return { ...fromDecision(decision), acceptedAddressed: true, triggerIds: decision.triggerIds }
+      }
+      if (addressed?.kind === 'ignore') {
+        return { ...fromDecision(addressed.decision), triggerIds: addressed.decision.triggerIds, declined: addressed.answered }
       }
       const decision = host.engine.decide(item.trigger_id, { kind: 'ignore', reason: item.reason! })
       // Somebody asked and the answer is no: say so, because a decision nobody can see is indistinguishable from a lost message.

@@ -88,6 +88,22 @@ describe('intake', () => {
     expect(h.repo.triggers.disposition('2')?.filtered).toEqual({ code: 'chat not allowed' })
     expect(h.repo.threads.get('chat:t1')?.pending).toEqual(['1'])
   })
+  it('leaves an ended Ticket out of the tickets a deferred message nearly reached', () => {
+    const h = harness({}, { fresh: true })
+    const ticket = accepted(h)
+    const live = h.repo.tickets.get(ticket.ticketId!)!
+    const ended = (id: string) => ({ ...live, id, title: id, ended: { at: live.createdAt, by: 'executor' as const, outcome: 'completed' as const } })
+    h.repo.tickets.save(ended('ended-1'))
+    // A request that starts work of its own is deferred to assessment, and an ended Ticket can own nothing.
+    h.engine.receive(trigger('2', { addressed: 'mention' }))
+    expect(h.repo.triggers.disposition('2')).toMatchObject({ fanout: [], deferred: [ticket.ticketId] })
+    // Two ended Tickets beside the open one make an unaddressed message ambiguous; only the open one is listed.
+    h.repo.tickets.save(ended('ended-2'))
+    const thread = h.repo.threads.get('chat:t1')!
+    h.repo.threads.save({ ...thread, subscriptions: [ticket.ticketId!, 'ended-1', 'ended-2'] })
+    h.engine.receive(trigger('3'))
+    expect(h.repo.triggers.disposition('3')?.deferred).toEqual([ticket.ticketId])
+  })
   it('records correlation for a trigger on several threads and evaluates only on the primary one', () => {
     const h = harness()
     h.engine.receive(trigger('1', { threads: [{ source: 'gh', id: 'pr-7' }, { source: 'gh', id: 'run-9' }] }))
@@ -1114,6 +1130,18 @@ describe('direct decisions', () => {
     expect(h.engine.decide('2', { kind: 'accept', title: 'Fix', scope: 'small', reason: 'rule',
       rules: ['r1'] })).toMatchObject({ kind: 'accept', strength: 'inferred' })
     expect(() => h.engine.decide('missing', { kind: 'ignore', reason: 'x' })).toThrow(new UserError('unknownTrigger'))
+  })
+  it('accepts an inferred candidate the code marks for a person\'s addressed message, which needs no matched rule', () => {
+    const h = harness()
+    accepted(h)
+    h.engine.receive(trigger('2', { actor: guest })); h.engine.reevaluate('2'); h.pump()
+    const candidate = h.requests.at(-1)!
+    expect(candidate.strength).toBe('inferred')
+    // The mark is the code's, never an assessment's: it stands for the address itself, so no rule is needed.
+    expect(() => h.decide(candidate, { kind: 'accept', title: 'Fix', scope: 'small', reason: 'addressed' })).toThrow(new UserError('notExplicit'))
+    const decision = h.decide(candidate, { kind: 'accept', title: 'Fix', scope: 'small', reason: 'addressed', forced: true })
+    expect(decision).toMatchObject({ kind: 'accept', strength: 'inferred' })
+    expect(h.repo.tickets.get(decision.ticketId!)).toMatchObject({ title: 'Fix' })
   })
   it('accepts an inferred candidate only on rules the Policy admits, whoever names them', () => {
     const h = harness({ admitsInferred: rules => rules.includes('enabled') })
