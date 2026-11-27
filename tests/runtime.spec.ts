@@ -1,9 +1,9 @@
 import { Context } from '@deepseek-ai/cordis'
 import { bindScopeParent } from '@deepseek-ai/dsh-scope'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
@@ -122,6 +122,10 @@ const CHAT = 'oc_team'
 function feishu(id: string, text: string, overrides: Record<string, unknown> = {}): Trigger {
   return feishuTrigger({ message_id: `om_${id}`, chat_id: CHAT, chat_type: 'group', sender_id: MEMBER, sender_type: 'user', content: text, create_time: String(Date.parse('2026-09-09T00:00:00Z') + Number(id.replace(/\D/g, '') || 0) * 1000), mentions: [{ id: 'ou_bot' }], ...overrides }, 'ou_bot', 'cli_bot')!
 }
+/** Sets the configured prepare command, which a launch runs before the worker starts. */
+const prepare = (command: string): void => {
+  runtime.store.saveSettings({ ...runtime.store.settings(), executor: { ...runtime.store.settings().executor, prepare: command } })
+}
 const worktreeName = 'fix-regression'
 /** Route one decision with the main Session's orchestrator_route, answering its result; a refused one throws its reason. */
 async function route(item: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -226,8 +230,8 @@ it('relays an explicit member mention as a candidate and creates the ticket, ack
   expect(ticket).toMatchObject({ title: '修复回归', mandate: { strength: 'explicit', basis: expect.objectContaining({ via: 'addressed', source: 'feishu', sender: 'Alice', addressed: 'mention', scope: expect.objectContaining({ chatId: CHAT }) }) },
     execution: expect.objectContaining({ name: expect.stringMatching(/^fix-regression-/) }), origin: expect.objectContaining({ triggerId: trigger.id }) })
   expect(ticket).not.toHaveProperty('ended')
-  // The ticket's execution environment is fixed at accept time: its directory under the execution root, and the Sources' values from its Trigger.
-  expect(ticket.execution!.directory).toBe(join(directory, 'work', ticket.execution!.name))
+  // The ticket's execution environment is fixed at accept time: its directory under the worktrees root, and the Sources' values from its Trigger.
+  expect(ticket.execution!.directory).toBe(join(directory, 'worktrees', ticket.execution!.name))
   expect(Object.fromEntries(runtime.ticketEnvironment(ticket).map(variable => [variable.key, variable.value]))).toMatchObject({ DSH_SUPERAGENT_DIR: ticket.execution!.directory, DSH_SUPERAGENT_NAME: ticket.execution!.name, DSH_SUPERAGENT_TICKET: ticket.id, DSH_SUPERAGENT_FEISHU_CHAT: CHAT, DSH_SUPERAGENT_GITHUB_REPOSITORY: 'acme/widgets', DSH_SUPERAGENT_GITHUB_ACCOUNT: 'agent-bot', DSH_SUPERAGENT_GITHUB_NUMBER: '' })
   expect(ticket.assignments).toEqual([expect.objectContaining({ state: 'running', startedAt: expect.any(String) })])
   expect(sessionId).toBe(`worker-${ticket.id}`)
@@ -1092,12 +1096,11 @@ it('leaves auto-merge to the delivery requirements, with the agent\'s own gh and
   expect(runtime.prompts.preview(runtime.prompts.current().config).worker).not.toContain('gh-merge')
 })
 
-it('runs the prepare command once for a new ticket, under the execution root with the ticket\'s environment, and fails the ticket with its output', async () => {
-  const prepare = (command: string) => runtime.store.saveSettings({ ...runtime.store.settings(), executor: { ...runtime.store.settings().executor, prepare: command } })
+it('runs the prepare command once for a new ticket, in the worktrees root with the ticket\'s environment, and fails the ticket with its output', async () => {
   const runs = () => subprocess.spawn.mock.calls.map(([spec]) => spec as { argv: string[]; cwd: string; env?: Record<string, string> }).filter(spec => spec.argv[0] === 'sh')
   prepare('git -C /srv/widgets worktree add "$DSH_SUPERAGENT_DIR" -b "agent/$DSH_SUPERAGENT_NAME"')
   const { ticket } = await acceptedTicket()
-  expect(runs()).toEqual([expect.objectContaining({ argv: ['sh', '-c', 'git -C /srv/widgets worktree add "$DSH_SUPERAGENT_DIR" -b "agent/$DSH_SUPERAGENT_NAME"'], cwd: join(directory, 'work'),
+  expect(runs()).toEqual([expect.objectContaining({ argv: ['sh', '-c', 'git -C /srv/widgets worktree add "$DSH_SUPERAGENT_DIR" -b "agent/$DSH_SUPERAGENT_NAME"'], cwd: join(directory, 'worktrees'),
     env: expect.objectContaining({ DSH_SUPERAGENT_DIR: ticket.execution!.directory, DSH_SUPERAGENT_NAME: ticket.execution!.name, DSH_SUPERAGENT_GITHUB_REPOSITORY: 'acme/widgets', DSH_SUPERAGENT_FEISHU_CHAT: CHAT }) })])
   // A retry reuses the prepared directory.
   await runTool(`worker-${ticket.id}`, 'orchestrator_report', { state: 'failed', summary: 'offline' })
@@ -1124,6 +1127,147 @@ it('counts a ticket whose directory the host prepared before prepare commands ex
   await runtime.idle()
   expect(subprocess.spawn.mock.calls.some(([spec]) => spec.argv[0] === 'sh')).toBe(false)
   expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)!.state).toBe('running')
+})
+
+describe('ticket workspaces', { timeout: 30_000 }, () => {
+  /** A project as the index describes one, with the git answers a worktree of it needs. */
+  const stamp = (ticket: { id: string; execution?: { name: string; directory: string } }) => {
+    const project = { name: 'acme/widgets', path: join(directory, 'projects', 'widgets'), commonDir: join(directory, 'projects', 'widgets', '.git'), basis: 'named' as const }
+    const stored = runtime.store.tickets.get(ticket.id)!
+    runtime.store.tickets.save({ ...stored, project })
+    const target = stored.execution!.directory
+    answers[`git -C ${project.path} worktree prune`] = ''
+    answers[`git -C ${project.path} rev-parse HEAD`] = 'head-1\n'
+    answers[`git -C ${project.path} worktree add --detach ${target} head-1`] = ''
+    answers[`git -C ${target} rev-parse --show-toplevel`] = `${target}\n`
+    answers[`git -C ${target} rev-parse --git-common-dir`] = `${project.commonDir}\n`
+    return { project, target }
+  }
+  const runs = (pattern: string) => subprocess.spawn.mock.calls.map(([spec]) => spec as { argv: string[]; cwd: string })
+    .filter(spec => spec.argv.join(' ').includes(pattern))
+  /** Brings a ticket to the state a retry needs: its worker last reported failed, and nobody has written since. */
+  const failed = async (sessionId: string) => { await runTool(sessionId, 'orchestrator_report', { state: 'failed', summary: 'offline' }) }
+
+  it('keeps every ticket directory under the state worktrees root, never in the work root', async () => {
+    const { ticket } = await acceptedTicket()
+    const execution = runtime.store.tickets.get(ticket.id)!.execution!
+    expect(execution.directory).toBe(join(directory, 'worktrees', execution.name))
+    expect(dirname(execution.directory)).toBe(join(directory, 'worktrees'))
+  })
+
+  it('creates the project\'s worktree detached from its HEAD, in the ticket directory, then runs prepare and verifies', async () => {
+    const { ticket, sessionId } = await acceptedTicket()
+    await failed(sessionId)
+    const { project, target } = stamp(ticket)
+    rmSync(target, { recursive: true, force: true })
+    prepare('true')
+    subprocess.spawn.mockClear()
+    await runtime.engine.retryTicket(ticket.id)
+    await runtime.idle()
+    const worktree = runs(project.path).map(spec => spec.argv.join(' ').replace(`git -C ${project.path} `, ''))
+    // prune, then the detached add: the branch the project's main copy holds cannot be checked out again.
+    expect(worktree).toEqual(['worktree prune', 'rev-parse HEAD', `worktree add --detach ${target} head-1`])
+    // prepare runs in the worktrees root, the directory's parent, with the project's variables.
+    expect(runs('sh -c true')).toEqual([expect.objectContaining({ cwd: join(directory, 'worktrees'),
+      env: expect.objectContaining({ DSH_SUPERAGENT_DIR: target, DSH_SUPERAGENT_PROJECT: project.name, DSH_SUPERAGENT_PROJECT_PATH: project.path }) })])
+  })
+
+  it('fails the ticket when the worktree cannot be created, rather than starting the worker in an empty directory', async () => {
+    const { ticket, sessionId } = await acceptedTicket()
+    await failed(sessionId)
+    const { target } = stamp(ticket)
+    rmSync(target, { recursive: true, force: true })
+    const add = `git -C ${join(directory, 'projects', 'widgets')} worktree add --detach ${target} head-1`
+    answers[add] = new Error('fatal: No space left on device')
+    await runtime.engine.retryTicket(ticket.id)
+    await runtime.idle()
+    const stored = runtime.store.tickets.get(ticket.id)!
+    expect(stored.assignments.at(-1)!.report).toMatchObject({ state: 'failed', summary: expect.stringContaining('No space left on device') })
+    expect(relays(runtime.masterId).at(-1)).toMatchObject({ state: 'failed', summary: expect.stringContaining('No space left on device') })
+  })
+
+  it('keeps one ticket\'s failed worktree from touching another ticket on the same project', async () => {
+    const first = await acceptedTicket()
+    const second = await acceptedTicket(feishu('2', '@bot 另一个改动'))
+    await failed(first.sessionId)
+    await failed(second.sessionId)
+    const one = stamp(first.ticket)
+    const two = stamp(second.ticket)
+    rmSync(one.target, { recursive: true, force: true })
+    rmSync(two.target, { recursive: true, force: true })
+    answers[`git -C ${one.project.path} worktree add --detach ${one.target} head-1`] = new Error('fatal: No space left on device')
+    await runtime.engine.retryTicket(first.ticket.id)
+    await runtime.engine.retryTicket(second.ticket.id)
+    await runtime.idle()
+    expect(runtime.store.tickets.get(first.ticket.id)!.assignments.at(-1)!.report).toMatchObject({ state: 'failed' })
+    // The other ticket on the same project is untouched: its worktree was created and its worker runs there.
+    expect(runtime.store.tickets.get(second.ticket.id)!.assignments.at(-1)!.state).toBe('running')
+    expect(existsSync(two.target)).toBe(true)
+    // The ticket whose creation failed has no empty directory standing in for the worktree it never got.
+    expect(existsSync(one.target)).toBe(false)
+  })
+
+  it('fails a project ticket whose directory is not the project\'s worktree once preparation is over', async () => {
+    const { ticket, sessionId } = await acceptedTicket()
+    await failed(sessionId)
+    const { target } = stamp(ticket)
+    rmSync(target, { recursive: true, force: true })
+    // Neither the engine's add nor a prepare command made a worktree of the path: it stays a plain directory.
+    delete answers[`git -C ${target} rev-parse --show-toplevel`]
+    delete answers[`git -C ${target} rev-parse --git-common-dir`]
+    await runtime.engine.retryTicket(ticket.id)
+    await runtime.idle()
+    // The worker never starts in an empty directory standing in for the worktree.
+    expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)!.report)
+      .toMatchObject({ state: 'failed', summary: expect.stringContaining('is not a worktree of acme/widgets') })
+  })
+
+  it('refuses a directory that holds another worktree, and says why', async () => {
+    const { ticket, sessionId } = await acceptedTicket()
+    await failed(sessionId)
+    const { project, target } = stamp(ticket)
+    // The directory is someone else's worktree: its git root is the directory, but its repository is another one.
+    answers[`git -C ${target} rev-parse --git-common-dir`] = `${join(directory, 'projects', 'other', '.git')}\n`
+    await runtime.engine.retryTicket(ticket.id)
+    await runtime.idle()
+    expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)!.report)
+      .toMatchObject({ state: 'failed', summary: expect.stringContaining('cannot be used') })
+    expect(runs(`worktree add --detach ${target}`)).toEqual([])
+  })
+
+  it('reuses a path that already is the project\'s worktree, and still checks the directory before the worker starts', async () => {
+    const { ticket, sessionId } = await acceptedTicket()
+    await failed(sessionId)
+    const { project, target } = stamp(ticket)
+    prepare('exit 1')
+    subprocess.spawn.mockClear()
+    await runtime.engine.retryTicket(ticket.id)
+    await runtime.idle()
+    expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)!.state).toBe('running')
+    // Nothing is created over a worktree this ticket already has, and the prepare command does not run again.
+    expect(runs('worktree add --detach')).toEqual([])
+    expect(runs('sh -c exit 1')).toEqual([])
+    // A skipped prepare never skips the checks: the git configuration gate still runs in the ticket's directory.
+    expect(subprocess.spawn.mock.calls.map(([spec]) => spec as { argv: string[]; cwd: string })
+      .filter(spec => spec.cwd === target && spec.argv.join(' ').startsWith('git config'))).toHaveLength(1)
+  })
+
+  it('gives a ticket without a project empty project variables and no worktree', async () => {
+    const { ticket } = await acceptedTicket()
+    const without = Object.fromEntries(runtime.ticketEnvironment(runtime.store.tickets.get(ticket.id)!).map(variable => [variable.key, variable.value]))
+    expect(without).toMatchObject({ DSH_SUPERAGENT_PROJECT: '', DSH_SUPERAGENT_PROJECT_PATH: '' })
+    stamp(ticket)
+    const withProject = Object.fromEntries(runtime.ticketEnvironment(runtime.store.tickets.get(ticket.id)!).map(variable => [variable.key, variable.value]))
+    expect(withProject).toMatchObject({ DSH_SUPERAGENT_PROJECT: 'acme/widgets', DSH_SUPERAGENT_PROJECT_PATH: join(directory, 'projects', 'widgets') })
+  })
+
+  it('removes a ticket\'s directory once it ends with no pull request to keep it for', async () => {
+    const { ticket, sessionId } = await acceptedTicket()
+    const target = runtime.store.tickets.get(ticket.id)!.execution!.directory
+    await runTool(sessionId, 'orchestrator_report', { state: 'ready', summary: 'done locally' })
+    expect(runtime.store.tickets.get(ticket.id)!.ended).toMatchObject({ outcome: 'completed' })
+    await vi.waitFor(() => expect(existsSync(target)).toBe(false))
+  })
 })
 
 it('runs a GitHub-only deployment: the GitHub part of the Policy decides alone, and the Feishu part has nothing to sync', async () => {
