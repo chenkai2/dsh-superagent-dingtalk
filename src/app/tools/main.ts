@@ -88,17 +88,36 @@ type Routed = { decision?: DecisionKind; reason: string; ticketId?: string | und
   acceptedAddressed?: boolean }
 /** Why an addressed message could not become the accept it asked for; the Engine's own reason follows it. */
 const NOT_ACCEPTED = 'It addressed the agent, so it is a request, but no ticket was created'
+/** One line of a message without the mentions that addressed the agent, whitespace collapsed. */
+const bareLine = (line: string): string =>
+  line.replace(/<@[^>\n]*>/g, ' ').replace(/(?:^|\s)@[\p{L}\p{N}_.-]+/gu, ' ').replace(/\s+/g, ' ').trim()
 /**
- * The request's own words as an accepted ticket's title: its first line without the mentions that addressed the agent,
- * whitespace collapsed and cut to the `accept` title limit. A first line that is nothing but a mention is kept whole, so an
- * accepted request never holds an empty title.
+ * The request's own words as an accepted ticket's title: whitespace collapsed and cut to the `accept` title limit. A message
+ * may address the agent on a line of its own, so the title is the first line that carries words without those mentions, and
+ * a message that is only a mention keeps its raw first line rather than becoming an empty title.
  */
 function addressedTitle(text: string): string {
-  const first = text.split('\n')[0] ?? ''
-  const bare = first.replace(/<@[^>\n]*>/g, ' ').replace(/(?:^|\s)@[\p{L}\p{N}_.-]+/gu, ' ').replace(/\s+/g, ' ').trim()
-  const raw = first.replace(/\s+/g, ' ').trim()
+  const lines = text.split('\n')
+  const title = lines.map(bareLine).find(Boolean) ?? (lines[0] ?? '').replace(/\s+/g, ' ').trim()
   // The limit counts UTF-16 code units, so a cut inside a surrogate pair would leave the title with half a glyph.
-  return (bare || raw).slice(0, 200).replace(/[\uD800-\uDBFF]$/, '')
+  return title.slice(0, 200).replace(/[\uD800-\uDBFF]$/, '')
+}
+/**
+ * The acknowledgement an addressed accept posts: the request named in the message's language, kept within the IM word limit
+ * that every outbound message must satisfy. Without the cut, a long first line would fail its delivery on every retry.
+ */
+function addressedAcknowledgement(text: string, title: string): string {
+  const prefix = isChinese(text) ? '收到：' : 'Received: '
+  if (wordCount(prefix + title) <= IM_WORDS) return prefix + title
+  const chars = Array.from(title)
+  const fits = (length: number): boolean => wordCount(`${prefix}${chars.slice(0, length).join('')}…`) <= IM_WORDS
+  let low = 0, high = chars.length
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2)
+    if (fits(middle)) low = middle
+    else high = middle - 1
+  }
+  return `${prefix}${chars.slice(0, low).join('')}…`
 }
 /**
  * Carry out one routing decision as its Engine command, in a transaction of its own. `decided` holds the Triggers that this
@@ -139,8 +158,7 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
       const trigger = host.store.triggers.get(item.trigger_id)
       if (trigger?.human && trigger.addressed) {
         const title = addressedTitle(trigger.text)
-        // The request's language, not the title's: a title that is only a mention carries no words of its own.
-        const acknowledgement = isChinese(trigger.text) ? `收到：${title}` : `Received: ${title}`
+        const acknowledgement = addressedAcknowledgement(trigger.text, title)
         const before = host.store.triggers.disposition(item.trigger_id)?.decisionId
         try {
           const decision = host.engine.decide(item.trigger_id, { kind: 'accept', title, scope: title, reason: { code: 'explicitRouted' },
@@ -153,7 +171,7 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
           // A Decision that existed before keeps its title and acknowledgement, as any replayed accept does.
           if (decision.id === before) {
             return { decision: 'accept', reason: `Already accepted as ${decision.ticketId}; title and acknowledgement unchanged`,
-              ticketId: decision.ticketId, acceptedAddressed: true }
+              ticketId: decision.ticketId, acceptedAddressed: true, triggerIds: decision.triggerIds }
           }
           return { ...fromDecision(decision), acceptedAddressed: true, triggerIds: decision.triggerIds }
         } catch (error) {

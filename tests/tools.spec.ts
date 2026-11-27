@@ -6,7 +6,7 @@ import { UserError, key } from '../src/core/index.ts'
 import { KV } from '../src/kv.ts'
 import { RESOURCES } from '../src/app/resources.ts'
 import { CliError, Commands } from '../src/infra/commands.ts'
-import { IM_WORDS, NOTE_WORDS } from '../src/infra/text.ts'
+import { IM_WORDS, NOTE_WORDS, wordCount } from '../src/infra/text.ts'
 import { CHAT, feishu, startRuntime, type Host } from './fixtures/host.ts'
 
 let h: Host
@@ -16,6 +16,7 @@ const words = (count: number) => Array.from({ length: count }, () => 'word').joi
 /** The Markdown bodies of the replies the bot sent, in call order. */
 const markdowns = () => vi.mocked(Commands.prototype.lark).mock.calls.map(([args]) => args)
   .filter(args => args.includes('--markdown')).map(args => args[args.indexOf('--markdown') + 1])
+  .filter((text): text is string => text !== undefined)
 const read = (resource: string, page: { offset?: number; limit?: number } = {}) =>
   h.runTool(h.runtime.masterId, 'orchestrator_read', { resource, ...page })
 
@@ -281,6 +282,14 @@ it('accepts a message that addressed the agent even when routing chose ignore, a
     reason: `Already accepted as ${ticket.id}; title and acknowledgement unchanged`, ticket: { ticket_id: ticket.id } })
   expect(await h.route({ kind: 'ignore', trigger_id: english.id, reason: 'Not needed.' })).toMatchObject({ decision: 'accept', acceptedAddressed: true })
   expect(markdowns()).toContain('Received: check the cache warmth for me')
+  // A replay decides the Trigger for the rest of the call, as a fresh accept does, so a later item cannot ignore it again.
+  const twice = await h.runTool(h.runtime.masterId, 'orchestrator_route', { decisions: [
+    { kind: 'ignore', trigger_id: chinese.id, reason: 'again' }, { kind: 'ignore', trigger_id: chinese.id, reason: 'once more' }] }) as
+    { results: Record<string, unknown>[] }
+  expect(twice.results).toEqual([
+    expect.objectContaining({ trigger_id: chinese.id, acceptedAddressed: true }),
+    { trigger_id: chinese.id, kind: 'ignore', refused: `Decided in this call with ${chinese.id}, whose Decision took its batch` },
+  ])
   // A model-chosen accept marks nothing: the route decided it, not this fallback.
   const chosen = feishu('9', '@bot 再加一个按钮')
   h.runtime.receive(chosen); await h.runtime.idle()
@@ -319,9 +328,11 @@ it('titles an accepted addressed message by its own first line without the menti
     ['10', '<@ou_bot> 把副标题改成“浏览网页”\n第二行不进入标题', '把副标题改成“浏览网页”'],
     // An address inside a word is part of the message, not a mention.
     ['11', '@bot 发邮件给 a@b.com 说明一下', '发邮件给 a@b.com 说明一下'],
+    // A mention alone on the first line leaves the request on the next one, which names the ticket instead.
+    ['12', '@bot\n帮我把副标题改成浏览网页', '帮我把副标题改成浏览网页'],
     // A message that is only a mention keeps its raw first line, so the ticket never holds an empty title.
-    ['12', '@bot', '@bot'],
-    ['13', '<@ou_member>', '<@ou_member>'],
+    ['13', '@bot', '@bot'],
+    ['14', '<@ou_member>', '<@ou_member>'],
   ]
   for (const [id, text, title] of cases) {
     const trigger = feishu(id, text)
@@ -329,6 +340,32 @@ it('titles an accepted addressed message by its own first line without the menti
     const result = await h.route({ kind: 'ignore', trigger_id: trigger.id, reason: 'Mention only.' })
     expect(h.runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!.title, text).toBe(title)
   }
+})
+
+it('keeps the acknowledgement of a long addressed request within the IM word limit, so it still delivers', async () => {
+  // Every outbound message is checked against IM_WORDS, so an acknowledgement that quotes a 200-character title would fail
+  // its delivery on every retry and end in an error. The quoted request is cut to the budget instead.
+  const request = '把商品卡的副标题改成更适合移动端展示的短文案'.repeat(11)
+  const trigger = feishu('15', `@bot ${request}`)
+  h.runtime.receive(trigger); await h.runtime.idle()
+  const accepted = await h.route({ kind: 'ignore', trigger_id: trigger.id, reason: 'A long request.' })
+  expect(h.runtime.store.tickets.get((accepted.ticket as { ticket_id: string }).ticket_id)!.title).toHaveLength(200)
+  await h.runtime.idle()
+  expect(h.runtime.store.replyStatus(key('ack', trigger.id))).toBe('sent')
+  const acknowledgement = markdowns().find(text => text.startsWith('收到：')) ?? ''
+  expect(wordCount(acknowledgement)).toBeLessThanOrEqual(IM_WORDS)
+  // The cut says so rather than ending mid-sentence.
+  expect(acknowledgement.endsWith('…')).toBe(true)
+})
+
+it('cuts an over-long title without leaving half a surrogate pair', async () => {
+  // The emoji starts at code unit 199, so a plain 200-unit cut would keep only its high surrogate and render as U+FFFD.
+  const trigger = feishu('16', `@bot ${'a'.repeat(199)}😀 tail`)
+  h.runtime.receive(trigger); await h.runtime.idle()
+  const accepted = await h.route({ kind: 'ignore', trigger_id: trigger.id, reason: 'A long title.' })
+  const title = h.runtime.store.tickets.get((accepted.ticket as { ticket_id: string }).ticket_id)!.title
+  expect(title).toBe('a'.repeat(199))
+  expect(title).not.toMatch(/[\uD800-\uDBFF]$/)
 })
 
 it('returns where a reply stands: sent, or dropped when its conversation can no longer receive it', async () => {
