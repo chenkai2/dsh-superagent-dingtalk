@@ -54,6 +54,14 @@ Before the first Assignment, if the Ticket directory does not exist, the prepare
 
 A failed command fails the Ticket and records its output. A retry or a person's message on one of the Ticket's Threads tries preparation again. A typical command uses `git worktree` to create a checkout. A pull request belongs to the Ticket when its branch's last path segment matches the Ticket's short name.
 
+### The project index
+
+The execution root's repositories are indexed in the background: one entry for each directory directly under the root that holds a `.git` directory or file. Bare repositories and submodules are skipped, and checkouts that share a common directory, such as linked worktrees, become one entry with the main worktree as its representative, so they do not make resolution ambiguous. The index is written to `<stateDir>/projects.json` with each project's name, path, common directory, `remote.origin.url`, HEAD commit, branch and last commit time. Startup does not wait for it, and a scan that fails keeps the previous snapshot and reports its problem.
+
+`GET /orchestrator/api/projects` reports the last snapshot: its generation time, how many projects it holds, what it skipped and why, any generation problem, and how it differs from the snapshot before it. `POST /orchestrator/api/projects/refresh` scans again; a request made while a scan runs joins it.
+
+A request's project is resolved in one place, from a name or alias a model supplied or from the aliases the request text mentions. Code sets the basis: `named` when the original text holds the name or alias, `indexed` when the index matched without the text naming it, and `alias` when the text hit an alias without a supplied name. A name or alias the index does not hold, or more than one match, leaves the project empty; nothing is guessed. `<stateDir>/projects-aliases.json` holds human-maintained aliases and is read only. Aliases learned from human corrections are hints read from their store; an alias the manual table and the learned layer map to different projects is ambiguous. The main Session reads the index through `orchestrator_projects`, which filters by keyword over name, path, remote and alias.
+
 ### Concurrency
 
 A Ticket holds a worker slot from the start of a launch, including preparation, or from the delivery that wakes its idle Executor. It also holds the slot throughout an active turn.
