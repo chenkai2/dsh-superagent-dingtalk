@@ -73,6 +73,9 @@ export class DingtalkStream {
       senderId: message.senderId,
       senderAliases: [message.senderStaffId, message.senderId].filter((id): id is string => !!id),
       senderName: message.senderNick,
+      // TODO: the callback carries no sender type, and `senderStaffId` is absent for some people, so this marks every
+      // sender a person. A robot's addressed message here therefore takes the addressed-accept path (docs/007); the
+      // history read reports robots as `robot` and docs/008 asks Sources to set `human: false` for them.
       human: true,
       direct,
       // A group message reaches the robot only when it addresses the robot; `isInAtList` states it structurally.

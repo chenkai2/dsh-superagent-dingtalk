@@ -127,14 +127,24 @@ export const POLICY_REVISION = 'mandate-v3'
 export function policyVersion(settings: Settings): string {
   return key(POLICY_REVISION, JSON.stringify({ rules: settings.policy.rules, mode: settings.eval.mode, sources: settings.policy.sources }))
 }
+/** Every id a Trigger's sender is known by, as the Source recorded them in `meta.actorIds`. */
+export function actorAliases(meta: Record<string, unknown>): string[] {
+  return Array.isArray(meta.actorIds) ? meta.actorIds.filter((id): id is string => typeof id === 'string') : []
+}
 export function allowedSender(settings: Settings, actor: ActorRef, aliases: readonly string[] = []): z.infer<typeof AllowedSchema> | undefined {
   const ids = [actor.id, ...aliases]
   return settings.policy.sources[actor.source]?.allowed.find(entry => ids.some(id => sameName(entry.id, id)))
 }
-/** Look up `actor` in the Source's `bots` policy list (validated by the Source's kind), whose messages are admitted as inferred candidates at most. */
-export function listedBot(settings: Settings, actor: ActorRef): z.infer<typeof AllowedSchema> | undefined {
+/**
+ * Look up `actor` or one of `aliases` in the Source's `bots` policy list (validated by the Source's kind), whose messages are
+ * admitted as inferred candidates at most. A bot row accepts any id without spaces, so an operator may type one the transport
+ * reports only among the sender's aliases; `allowedSender` reads people the same way, and a list read by one id alone silently
+ * misses those entries.
+ */
+export function listedBot(settings: Settings, actor: ActorRef, aliases: readonly string[] = []): z.infer<typeof AllowedSchema> | undefined {
   const bots = z.array(AllowedSchema).catch([]).parse(settings.policy.sources[actor.source]?.bots ?? [])
-  return bots.find(entry => sameName(entry.id, actor.id))
+  const ids = [actor.id, ...aliases]
+  return bots.find(entry => ids.some(id => sameName(entry.id, id)))
 }
 export const anyoneAllowed = (settings: Settings): boolean => Object.values(settings.policy.sources).some(part => part.allowed.length > 0)
 const senderName = (entry: z.infer<typeof AllowedSchema>): string => entry.name || entry.id
@@ -181,7 +191,7 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
   const mode = settings.eval.mode
   /** Gate non-human triggers: only listed bots (as inferred candidates) and senderless system/CI events may pass; other bots are rejected. */
   const machineGate = (trigger: Trigger): GateResult => {
-    const bot = trigger.actor.id ? listedBot(settings, trigger.actor) : undefined
+    const bot = trigger.actor.id ? listedBot(settings, trigger.actor, actorAliases(trigger.meta)) : undefined
     if (trigger.actor.id && !bot) return { admissible: false, reason: 'not_human' }
     const scope = listened(sources, trigger.source, trigger.meta)
     if (!scope.listened || !(trigger.addressed || scope.observed)) return { admissible: false, reason: 'not_human' }
@@ -202,7 +212,7 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
     version, paused: settings.paused, evalTimeoutMs: settings.eval.timeoutSeconds * 1000,
     gate(trigger: Trigger, thread, tickets) {
       if (!trigger.human) return machineGate(trigger)
-      const aliases = Array.isArray(trigger.meta.actorIds) ? trigger.meta.actorIds.filter((id): id is string => typeof id === 'string') : []
+      const aliases = actorAliases(trigger.meta)
       const allowed = allowedSender(settings, trigger.actor, aliases)
       const scope = listened(sources, trigger.source, trigger.meta)
       const row = scope.listened ? scope.row : undefined
