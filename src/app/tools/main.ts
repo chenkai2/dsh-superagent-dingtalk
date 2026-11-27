@@ -169,9 +169,8 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
     routeTool(host),
     tool({
       name: 'orchestrator_projects',
-      description: 'List the repositories the execution root indexes so a project name comes from the index, not a guess; an unlisted name cannot be resolved.',
-      schema: z.object({ keyword: z.string().trim().max(200).optional()
-        .describe('Case-insensitive name, path, remote or alias match; omit to list every project.') }).strict(),
+      description: 'List indexed repositories by keyword over name, path, remote or alias.',
+      schema: z.object({ keyword: z.string().trim().max(200).optional() }).strict(),
       execute: async ({ keyword }) => {
         const index = currentProjectIndex(host.context)
         if (!index) return { generatedAt: null, root: '', problem: 'Project index is not available in this process', projects: [] }
