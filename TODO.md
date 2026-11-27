@@ -54,6 +54,13 @@
 worker 系统提示里出现过「MCP resource servers … list_mcp_resources」与 `mcp__github__*`，
 而它的工具集里没有这些。挂载能力补齐后应复查该段落是否名副其实。
 
+## P0 — 项目感知执行（docs/009，0.0.37）
+
+- **合并后必须接线的一处（否则 §7.1 闭环断掉）**：#5 的 `ProjectIndexOptions.learned` 是可选注入、生产装配点没人传；
+  #7 提供 `readLearnedProjects()`。两条合并后要在 Runtime 组装 `ProjectIndex` 处注入 adapter，否则人工纠正学到的别名永远不生效。
+- **#7 的「唯一项目才执行」暂用子串校验**（索引不在它的分支上）。#5 合入后改成调用 `resolveProject`，让 `basis` 与别名解析统一。
+- 面板卡片尚不渲染 `projectCorrections`（`src/app/cards.ts` 不在 #7 文件域），歧义目前只体现在工具结果与库里。
+
 ## 已知边界（接受，不再当缺陷）
 
 - **取消之后可能多说一句**：主会话若在通知已送达后才发 result，撤回不了。已把「被鼓励」降为「忽略一句明确指示」；
