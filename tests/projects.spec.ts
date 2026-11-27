@@ -1,10 +1,11 @@
 /** The project index and its resolver: the facts a scan records, and how a name or an alias becomes one project. */
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PROJECTS_ALIASES, PROJECTS_FILE, ProjectIndex } from '../src/app/projects.ts'
+import { mainTools } from '../src/app/tools/main.ts'
 import { startRuntime, type Host } from './fixtures/host.ts'
 
 const ENV = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' }
@@ -103,6 +104,39 @@ describe('project index', () => {
     expect(file.projects).toHaveLength(1)
   }, 30_000)
 
+  it('keeps the previous snapshot when the configured root changes to a missing path', async () => {
+    const base = scratch(), stateDir = scratch()
+    const root = join(base, 'work')
+    repository(join(root, 'alpha'))
+    let current = root
+    const index = new ProjectIndex({ stateDir, root: () => current })
+    const first = await index.refresh()
+
+    current = join(base, 'typo-not-mounted')
+    const state = await index.refresh()
+
+    expect(state).toMatchObject({ root, count: 1, generatedAt: first.generatedAt, diff: first.diff })
+    expect(state.problem).toContain('does not exist')
+    const file = JSON.parse(readFileSync(join(stateDir, PROJECTS_FILE), 'utf8')) as { root: string; projects: unknown[] }
+    expect(file).toMatchObject({ root, projects: [expect.anything()] })
+  }, 30_000)
+
+  it('reports a persisted file of the wrong shape instead of ignoring it', () => {
+    const stateDir = scratch()
+    writeFileSync(join(stateDir, PROJECTS_FILE), '[]')
+    const index = indexFor('/root', stateDir)
+
+    expect(index.state().problem).toContain('does not hold a project index')
+  })
+
+  it('answers generating: false when the host has no index at all', async () => {
+    const tool = mainTools({ context: {} } as never, { id: 'none' } as never).find(item => item.name === 'orchestrator_projects')!
+    const out = await tool.execute({}, new AbortController().signal) as { generating: boolean; problem: string; projects: unknown[] }
+
+    expect(out).toMatchObject({ generating: false, projects: [] })
+    expect(out.problem).toContain('not available')
+  })
+
   it('drops invalid entries from a persisted index instead of failing the tools', async () => {
     const stateDir = scratch()
     const entry = { name: 'good', path: '/root/good', commonDir: '/root/good/.git', head: 'a'.repeat(40), branch: 'main' }
@@ -160,18 +194,27 @@ describe('project index', () => {
     expect(String(logger.mock.calls[0]?.[0])).toContain('learned project aliases')
   }, 30_000)
 
-  it('reuses the remote and commit time of a repository whose common directory and HEAD did not move', async () => {
+  it('reuses a remote until the repository config changes, and reads it again after that', async () => {
     const root = scratch(), stateDir = scratch()
     const alpha = repository(join(root, 'alpha'))
+    const config = join(alpha, '.git', 'config')
+    const stamp = new Date('2026-01-01T00:00:00.000Z')
     git(alpha, 'remote', 'add', 'origin', 'https://example.com/first.git')
+    utimesSync(config, stamp, stamp)
     const index = indexFor(root, stateDir)
     await index.refresh()
 
-    // Only the remote URL changes; HEAD and the common directory do not, so a hot scan keeps the recorded facts.
+    // A config rewrite with the same mtime keeps the recorded URL: HEAD and the common directory did not move either.
     git(alpha, 'remote', 'set-url', 'origin', 'https://example.com/second.git')
+    utimesSync(config, stamp, stamp)
     await index.refresh()
-
     expect(index.list('alpha')[0]?.remote).toBe('https://example.com/first.git')
+
+    // A new mtime is the signal that the repository config changed, so the next scan reads the remote again.
+    git(alpha, 'remote', 'set-url', 'origin', 'https://example.com/third.git')
+    utimesSync(config, new Date(stamp.getTime() + 1000), new Date(stamp.getTime() + 1000))
+    await index.refresh()
+    expect(index.list('alpha')[0]?.remote).toBe('https://example.com/third.git')
   }, 30_000)
 
   it('records the difference from the previous snapshot', async () => {

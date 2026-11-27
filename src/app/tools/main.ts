@@ -173,7 +173,7 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
       schema: z.object({ keyword: z.string().trim().max(200).optional() }).strict(),
       execute: async ({ keyword }) => {
         const index = currentProjectIndex(host.context)
-        if (!index) return { generatedAt: null, root: '', problem: 'Project index is not available in this process', projects: [] }
+        if (!index) return { generatedAt: null, root: '', generating: false, problem: 'Project index is not available in this process', projects: [] }
         const state = index.state()
         return { generatedAt: state.generatedAt, root: state.root, generating: state.generating,
           ...state.problem ? { problem: state.problem } : {},

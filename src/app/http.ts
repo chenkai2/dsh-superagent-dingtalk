@@ -268,7 +268,7 @@ export function registerHttp(ctx: Context, runtime: HttpHost): () => void {
   if (ctx.webServer.host !== '127.0.0.1') throw new Error('Orchestrator management requires a loopback Web server')
   // The index is created here because startup registers these routes before it waits for anything, which is also where a
   // background scan can start without adding to that wait. A partial host without a state directory gets no index.
-  // TODO(P0): pass the correction store's learned aliases here once that store is wired; without them the learned layer
+  // TODO(P0 — 项目感知执行): pass the correction store's learned aliases here once it lands; without them the learned layer
   // stays off and only the manual alias table applies.
   const projects = runtime.machine?.stateDir ? new ProjectIndex({
     stateDir: runtime.machine.stateDir,
