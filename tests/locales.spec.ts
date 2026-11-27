@@ -2,6 +2,7 @@ import { expect, it } from 'vitest'
 import type { EffectKind } from '../src/app/effects.ts'
 import { en, zh, type DshSuperagentKey } from '../src/client/locales.ts'
 import { reasonLabel, type T } from '../src/client/text.ts'
+import type { WorkerMountFailureCode } from '../src/app/mcp-servers.ts'
 import { REASONS, USER_ERRORS } from '../src/core/index.ts'
 
 const placeholders = (text: string) => [...text.matchAll(/\{(\w+)\}/g)].map(match => match[1]).sort()
@@ -43,4 +44,13 @@ it('has words for every reason code the core records', () => {
 
 it('words the reasons agents read in the glossary\'s words: a sender on the list, a Thread', () => {
   expect(Object.values(REASONS).filter(text => /\b(member|members|topic)\b/i.test(text))).toEqual([])
+})
+
+it('words every mount failure the host records, in both languages', () => {
+  // A code without words would reach the panel as a bare key, which reads as a broken page. The map is total, so a code
+  // added to the union without a case here is a compile error rather than a missing translation.
+  const codes: Record<WorkerMountFailureCode, true> = { 'not-installed': true, 'not-configured': true, refused: true,
+    'profile-unreadable': true, 'command-missing': true, unavailable: true }
+  expect(Object.keys(codes).filter(code => !zh[`mountFailure.${code}` as DshSuperagentKey]
+    || !en[`mountFailure.${code}` as DshSuperagentKey])).toEqual([])
 })
