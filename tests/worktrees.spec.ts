@@ -1,7 +1,7 @@
 /** The project worktrees a ticket works in: creation, identity and cleanup, against real git repositories. */
 import { execFile } from 'node:child_process'
 import { realpathSync } from 'node:fs'
-import { mkdir, mkdtemp, rm, stat, utimes, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
@@ -256,5 +256,50 @@ describe('sweeping worktrees', { timeout: 30_000 }, () => {
   it('reports the worktrees it removed and those it failed to', async () => {
     const report = await worktrees.sweep([], now)
     expect(report).toEqual({ removed: [], failed: [] })
+  })
+})
+describe('cleanup that must not trust a path', { timeout: 30_000 }, () => {
+  it('refuses to remove a directory that is another project\'s worktree', async () => {
+    const portal = await project(root, 'portal.example.com')
+    const shop = await project(root, 'shop.example.com')
+    const directory = worktreePath(stateDir, 'fix-button-abc')
+    await worktrees.create(shop, directory)
+    const before = await git(directory, 'rev-parse', 'HEAD')
+    // The ticket records portal, but the directory is shop's worktree: it is not this ticket's to delete.
+    await worktrees.remove(directory, portal)
+    expect(await stat(directory)).toBeTruthy()
+    expect(await git(directory, 'rev-parse', 'HEAD')).toBe(before)
+    expect(await git(shop.path, 'worktree', 'list', '--porcelain')).toContain(directory)
+  })
+
+  it('refuses to release a directory that is another project\'s worktree', async () => {
+    const portal = await project(root, 'portal.example.com')
+    const shop = await project(root, 'shop.example.com')
+    const directory = worktreePath(stateDir, 'fix-button-abc')
+    await worktrees.create(shop, directory)
+    await worktrees.release(ticket(directory, { project: portal, ended: { at: new Date().toISOString(), by: 'executor', outcome: 'completed' },
+      assignments: [] }))
+    expect(await stat(directory)).toBeTruthy()
+  })
+
+  it('clears the registration of an orphan worktree no ticket names', async () => {
+    const portal = await project(root, 'portal.example.com')
+    const orphan = worktreePath(stateDir, 'orphan-def')
+    await worktrees.create(portal, orphan)
+    expect((await worktrees.sweep([], new Date())).removed).toEqual([orphan])
+    // A directory removed without its registration makes the path unusable for the next add.
+    expect(await git(portal.path, 'worktree', 'list', '--porcelain')).not.toContain(orphan)
+  })
+
+  it('cleans a path reached through a symbolic link, which git reports resolved', async () => {
+    const portal = await project(root, 'portal.example.com')
+    const linked = join(root, 'linked-state')
+    await symlink(stateDir, linked)
+    const through = new Worktrees({ stateDir: linked, run, log: () => {} })
+    const directory = worktreePath(stateDir, 'fix-button-abc')
+    await worktrees.create(portal, directory)
+    await through.remove(directory, portal)
+    await expect(stat(directory)).rejects.toThrow()
+    expect(await git(portal.path, 'worktree', 'list', '--porcelain')).not.toContain(directory)
   })
 })

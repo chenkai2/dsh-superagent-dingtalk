@@ -5,8 +5,9 @@
  * A worktree is not a security boundary: it isolates the work tree, index and HEAD, while stash, refs, config and gc are
  * shared with the project it comes from.
  */
+import { realpathSync } from 'node:fs'
 import { mkdir, readdir, rm, stat } from 'node:fs/promises'
-import { join, resolve, sep } from 'node:path'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import type { SubprocessOutputReader, SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import { latestReport, liveTicket } from '../core/index.ts'
 import type { Ticket, TicketProject } from '../core/index.ts'
@@ -55,10 +56,9 @@ export const gitRunner = (subprocess: SubprocessRuntime, stateDir: string): Work
   throw new CliError(read(handle.collected.stderr).trim() || `${argv.join(' ')} ${ended}`, undefined, exitCode ?? undefined)
 }
 
-/** The worktrees a deployment's tickets work in, never the work root that holds the projects themselves. */
-export const worktreesRoot = (stateDir: string): string => join(stateDir, 'worktrees')
-/** The directory one ticket works in: `<stateDir>/worktrees/<execution.name>`. */
-export const worktreePath = (stateDir: string, name: string): string => join(worktreesRoot(stateDir), name)
+// One definition of the roots, in the module that also reads them for the prompt and the settings page.
+export { worktreesRoot, worktreePath } from '../app/execution-environment.ts'
+import { worktreesRoot } from '../app/execution-environment.ts'
 
 export interface WorktreeHost {
   stateDir: string
@@ -68,10 +68,16 @@ export interface WorktreeHost {
   log?: (message: string) => void
 }
 
+/** A path with the symlinks git resolves, so a root reached through one compares equal; the literal path when neither it nor
+ * its parent exists yet. */
+const canonical = (path: string): string => {
+  try { return realpathSync(path) } catch { /* Not there yet: the directory that holds it decides. */ }
+  try { return join(realpathSync(dirname(path)), basename(path)) } catch { return resolve(path) }
+}
 /** Whether `path` is a directory below `root`, which is the only place this module creates or deletes directories. */
 const below = (root: string, path: string): boolean => {
-  const target = resolve(path)
-  return target.startsWith(resolve(root) + sep)
+  const target = canonical(path)
+  return target !== canonical(root) && target.startsWith(canonical(root) + sep)
 }
 
 /**
@@ -84,7 +90,9 @@ export class Worktrees {
 
   /** The root all ticket directories live in. */
   root(): string { return worktreesRoot(this.host.stateDir) }
-  /** The cleanups that failed since this instance was created, for the panel and the tests. */
+  /** Whether a directory is one this module creates and deletes; a path elsewhere is a ticket from before the move. */
+  owns(directory: string): boolean { return below(this.root(), directory) }
+  /** The cleanups that failed since this instance was created, for the Executor's log and the tests. */
   failures(): readonly CleanupFailure[] { return this.failed }
   private readonly failed: CleanupFailure[] = []
 
@@ -133,8 +141,9 @@ export class Worktrees {
     const head = (await this.git(['-C', project.path, 'rev-parse', 'HEAD'], project.path, signal)
       .catch(error => { throw new WorkspaceError(`The project ${project.name} has no commit to work from: ${this.message(error)}`) })).trim()
     if (!head) throw new WorkspaceError(`The project ${project.name} has no commit to work from`)
-    // Detached: a branch the project's main copy has checked out cannot be checked out again, and a ticket's work belongs
-    // on the `agent/<name>` branch its worker creates.
+    // Detached so the ticket's own branch is the only one its work can land on: the `agent/<name>` branch its worker creates.
+    // A branch name would also fail whenever the project's main copy holds it, and a commit id would attach no branch by
+    // itself, so `--detach` states the intent instead of leaving it to what git picked.
     await this.git(['-C', project.path, 'worktree', 'add', '--detach', directory, head], project.path, signal).catch(error => {
       throw new WorkspaceError(`The worktree of ${project.name} could not be created at ${directory}: ${this.message(error)}`)
     })
@@ -144,9 +153,18 @@ export class Worktrees {
    * Removes a ticket's directory and, for a project worktree, its registration, keeping every branch, including the
    * `agent/<name>` branch a ticket commits to and its pull request comes from.
    */
-  async remove(directory: string, project?: TicketProject, signal?: AbortSignal): Promise<void> {
+  async remove(directory: string, project?: TicketProject, signal?: AbortSignal): Promise<boolean> {
     // Outside the root is never this module's to delete, such as a ticket recorded before directories moved there.
-    if (!below(this.root(), directory)) return
+    if (!this.owns(directory)) return false
+    // The identity judged before a launch is judged again here: a cleanup has only a path to go on, and deleting another
+    // project's worktree would throw away work no record of this ticket mentions. A refusal is reported, never forced.
+    if (project) {
+      const standing = await this.standing(directory, project)
+      if (standing.state === 'foreign') {
+        this.host.log?.(`dsh-superagent left the directory ${directory} in place: ${standing.why}`)
+        return false
+      }
+    }
     if (project && await this.exists(project.path)) {
       // A valid worktree and its registration go together; in the half-broken state (the directory is there, its .git file
       // is gone) git calls the path no worktree at all, and the directory and the registration are cleared separately.
@@ -155,9 +173,10 @@ export class Worktrees {
       await rm(directory, { recursive: true, force: true })
       await this.git(['-C', project.path, 'worktree', 'prune'], project.path, signal)
         .catch(() => { /* The next sweep of this project clears a registration whose directory is gone. */ })
-      return
+      return true
     }
     await rm(directory, { recursive: true, force: true })
+    return true
   }
 
   /**
@@ -189,8 +208,11 @@ export class Worktrees {
       if (directory && below(root, directory)) owned.set(resolve(directory), ticket)
     }
     const drop = async (directory: string, project?: TicketProject): Promise<void> => {
-      try { await this.remove(directory, project); removed.add(directory) }
-      catch (error) { failed.push(this.fail(directory, error)) }
+      try {
+        // An orphan still has a registration, and a plain removal leaves it: the path then cannot be added again. The
+        // directory itself says which repository to ask, when no ticket does.
+        if (await this.remove(directory, project ?? await this.projectAt(directory))) removed.add(directory)
+      } catch (error) { failed.push(this.fail(directory, error)) }
     }
     /** Whether the ticket a directory belongs to is the one this sweep judged: one resumed since keeps its directory. */
     const same = (judged: Ticket): boolean => { const fresh = current(judged.id); return !!fresh && fresh.ended?.at === judged.ended?.at }
@@ -243,6 +265,14 @@ export class Worktrees {
     return now.getTime() - Math.max(ended || 0, used) >= MAX_WORKTREE_AGE_MS
   }
 
+  /** The project a directory belongs to, for a cleanup no ticket describes: the repository git reports from inside it. */
+  private async projectAt(directory: string): Promise<TicketProject | undefined> {
+    const common = await this.commonDir(directory)
+    if (!common) return undefined
+    // A linked worktree's common directory is the main copy's `.git`; a repository's own is `<path>/.git` too.
+    const path = basename(common) === '.git' ? dirname(common) : common
+    return { name: basename(path), path, commonDir: common, basis: 'indexed' }
+  }
   /** The work tree root of `directory`, or undefined when it holds no repository at all. */
   private async toplevel(directory: string): Promise<string | undefined> {
     return this.git(['-C', directory, 'rev-parse', '--show-toplevel'], directory)
