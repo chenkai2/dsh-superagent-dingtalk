@@ -111,6 +111,9 @@ async function restart(machine: Partial<Machine> = {}, accounts: Accounts = {}):
   return runtime
 }
 let deliveries: ReturnType<typeof vi.fn<(request: { sessionId: string; mode: 'queue' | 'steer'; id: string; text: string }) => void>>
+/** How many outbox rows one message id holds: 0 while nothing was queued, 1 once it was, whether or not it went out. */
+const outboxRows = (value: Runtime, id: string): number =>
+  Number((value.store.db.prepare('SELECT COUNT(*) AS rows FROM outbox WHERE id = ?').get(id) as { rows: number }).rows)
 const relays = (sessionId: string) => deliveries.mock.calls.map(([call]) => call).filter(call => call.sessionId === sessionId).map(call => {
   try { return JSON.parse(call.text) as Record<string, unknown> } catch { return { text: call.text } as Record<string, unknown> }
 })
@@ -1671,6 +1674,125 @@ it('restarts a worker whose shell job the host stop ended with the recovery note
   const recovered = next.store.tickets.get(ticket.id)!
   expect(recovered.assignments.map(item => item.state)).toEqual(['ended', expect.stringMatching(/^(pending|running)$/)])
   expect(recovered.inputs).toEqual([expect.objectContaining({ kind: 'text', text: expect.stringContaining('host restarted') })])
+})
+
+describe('a stop with work in progress', () => {
+  it('marks the Assignment interrupted, tells the conversation once, and continues the work on the next start', async () => {
+    const { ticket, trigger } = await acceptedTicket()
+    const first = runtime.store.tickets.get(ticket.id)!.assignments.at(-1)!
+    expect(first.state).toBe('running')
+    expect(first.report).toBeUndefined()
+    const id = key('interrupted', ticket.id, first.id)
+    // A stop stops the effect queue before the Executor, so the notice the Executor queues waits for the next start.
+    await runtime.effects.drain()
+    await runtime.executor.shutdown()
+    // A stop that runs again finds no running Assignment: it records and tells nothing twice.
+    await runtime.executor.shutdown()
+    const stopped = runtime.store.tickets.get(ticket.id)!
+    expect(stopped.assignments.map(item => item.state)).toEqual(['ended', 'pending'])
+    expect(stopped.assignments[0]).toMatchObject({ endedReason: 'hostRestarted' })
+    expect(stopped.inputs).toEqual([expect.objectContaining({ kind: 'text', text: expect.stringContaining('host restarted') })])
+    expect(runtime.store.receipts.get(id)).toMatchObject({ status: 'pending', kind: 'notice', ticketId: ticket.id,
+      channel: trigger.channel, text: expect.stringContaining('自动继续') })
+    expect(outboxRows(runtime, id)).toBe(1)
+    // The next start sends the queued notice and launches the replacement Assignment, without telling the person again.
+    const next = await restart()
+    // The Source kinds are normally registered by plugins, which unit tests stand in for before the start finishes.
+    next.sources.register(feishuKind); next.sources.register(githubKind)
+    await next.ready; await next.sendReplies()
+    // The queued launch runs too, so the work really continues by itself rather than only the notice going out.
+    await next.effects.idle()
+    expect(next.store.receipts.get(id)).toMatchObject({ status: 'sent' })
+    expect(next.store.tickets.get(ticket.id)!.assignments.map(item => item.state)).toEqual(['ended', 'running'])
+    expect(outboxRows(next, id)).toBe(1)
+  })
+  it('marks a worker that reported progress with a question as interrupted, and asks that question again', async () => {
+    const { ticket, trigger, sessionId } = await acceptedTicket()
+    await runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: '改到一半', human_action: '要不要连桌面端一起改？' })
+    const asked = runtime.store.tickets.get(ticket.id)!.attention!
+    const reply = key('attention-reply', asked.id)
+    const notice = key('interrupted', ticket.id, runtime.store.tickets.get(ticket.id)!.assignments.at(-1)!.id)
+    expect(runtime.store.receipts.get(reply)).toBeUndefined()
+    await runtime.effects.drain()
+    await runtime.executor.shutdown()
+    const stopped = runtime.store.tickets.get(ticket.id)!
+    // A question is not only a result of a finished turn: a replacement Assignment starts over and would never send it.
+    expect(stopped.assignments.map(item => item.state)).toEqual(['ended', 'pending'])
+    expect(stopped.assignments[0]).toMatchObject({ report: { state: 'progress' } })
+    expect(stopped.attention).toMatchObject({ id: asked.id, question: '要不要连桌面端一起改？' })
+    expect(runtime.store.receipts.get(reply)).toMatchObject({ kind: 'reply', purpose: 'attention', text: '要不要连桌面端一起改？',
+      channel: trigger.channel })
+    expect(runtime.store.receipts.get(notice)).toMatchObject({ kind: 'notice', ticketId: ticket.id })
+    expect([outboxRows(runtime, reply), outboxRows(runtime, notice)]).toEqual([1, 1])
+    // The notice is queued before the question it left open, so a person reads why the work stopped before being asked.
+    const queued = (runtime.store.db.prepare('SELECT id FROM outbox ORDER BY rowid').all() as { id: string }[]).map(row => row.id)
+    expect(queued.indexOf(notice)).toBeLessThan(queued.indexOf(reply))
+  })
+  it('marks a ticket interrupted while its worker works on a person\'s message that arrived after its report', async () => {
+    const { ticket, sessionId } = await acceptedTicket()
+    await runTool(sessionId, 'orchestrator_report', { state: 'blocked', summary: '卡住了，需要你定' })
+    await receive(feishu('2', '继续吧', { root_id: 'om_1' }))
+    const working = runningAssignment(runtime.store.tickets.get(ticket.id)!)!
+    // The person's message reached the worker after the report, so the ticket is working again, not waiting for a person.
+    expect(working.deliveredAt! >= working.report!.at).toBe(true)
+    await runtime.effects.drain()
+    await runtime.executor.shutdown()
+    expect(runtime.store.tickets.get(ticket.id)!.assignments.map(item => item.state)).toEqual(['ended', 'pending'])
+    expect(runtime.store.receipts.get(key('interrupted', ticket.id, working.id))).toMatchObject({ kind: 'notice' })
+  })
+  it('leaves alone a ticket its worker already handed to a person, whose question a stop does not interrupt', async () => {
+    const { ticket, sessionId } = await acceptedTicket()
+    await runTool(sessionId, 'orchestrator_report', { state: 'blocked', summary: '需要你定一下颜色' })
+    const id = key('interrupted', ticket.id, runtime.store.tickets.get(ticket.id)!.assignments.at(-1)!.id)
+    await runtime.effects.drain()
+    await runtime.executor.shutdown()
+    expect(runtime.store.tickets.get(ticket.id)!.assignments.map(item => item.state)).toEqual(['running'])
+    expect(runtime.store.receipts.get(id)).toBeUndefined()
+  })
+})
+
+describe('a restart with a question waiting for a person', () => {
+  it('sends the blocked worker\'s question once, and keeps its Session instead of restarting the Assignment', async () => {
+    const { ticket, trigger, sessionId } = await acceptedTicket()
+    await runTool(sessionId, 'orchestrator_report', { state: 'blocked', summary: '需要你定一下', human_action: '下拉框要不要也改？' })
+    const attention = runtime.store.tickets.get(ticket.id)!.attention!
+    const id = key('attention-reply', attention.id)
+    // No answer reaches the question: the main Session sends it, or the restart does.
+    expect(runtime.store.receipts.get(id)).toBeUndefined()
+    runtime.executor.resume()
+    runtime.executor.resume()
+    await runtime.sendReplies()
+    expect(runtime.store.receipts.get(id)).toMatchObject({ status: 'sent', purpose: 'attention', text: '下拉框要不要也改？',
+      channel: trigger.channel })
+    expect(outboxRows(runtime, id)).toBe(1)
+    // The question is the worker's result, so the Assignment keeps running under the same Session.
+    const kept = runtime.store.tickets.get(ticket.id)!
+    expect(kept.assignments.map(item => item.state)).toEqual(['running'])
+    expect(kept.assignments[0]!.endedReason).toBeUndefined()
+    expect(kept.inputs.filter(input => input.kind === 'text')).toEqual([])
+  })
+  it('asks nothing again when a person\'s message reached the ticket after the question', async () => {
+    const { ticket, sessionId } = await acceptedTicket()
+    await runTool(sessionId, 'orchestrator_report', { state: 'blocked', summary: '要定颜色', human_action: '用深色还是浅色？' })
+    const asked = runtime.store.tickets.get(ticket.id)!.attention!
+    const reply = key('attention-reply', asked.id)
+    const answer = feishu('2', '用深色', { root_id: 'om_1' })
+    await receive(answer)
+    // The answer arrived after the question and reached the worker: that is what makes asking again talk past the person.
+    const delivered = () => runtime.store.tickets.get(ticket.id)!.inputs
+      .filter(input => input.kind === 'trigger' && input.triggerId === answer.id && input.deliveredTo)
+    expect(delivered()).toHaveLength(1)
+    const replaced = runningAssignment(runtime.store.tickets.get(ticket.id)!)!
+    expect(replaced.deliveredAt! >= replaced.report!.at).toBe(true)
+    runtime.executor.resume()
+    await runtime.sendReplies()
+    expect(runtime.store.receipts.get(reply)).toBeUndefined()
+    expect(outboxRows(runtime, reply)).toBe(0)
+    // The message itself is not lost in the restart: it is the ticket's, delivered to the Assignment it replaced.
+    const kept = runtime.store.tickets.get(ticket.id)!
+    expect(kept.inputs.filter(input => input.kind === 'trigger' && input.triggerId === answer.id)).toHaveLength(1)
+    expect(delivered()).toHaveLength(1)
+  })
 })
 
 it('creates an Executor Session under the bundle\'s worker preset, and the main Session under its router preset', async () => {

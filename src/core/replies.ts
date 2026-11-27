@@ -1,7 +1,7 @@
 /** The Engine's messages to Channels, each by the rule that allows it. */
 import { key } from './ids.ts'
 import { UserError } from './errors.ts'
-import { latestAssignment, liveTicket, ticketOutcome } from './model.ts'
+import { latestAssignment, latestReport, liveTicket, ticketOutcome } from './model.ts'
 import type { ChannelRef, Ticket, Trigger } from './model.ts'
 import type { ReplyStatus } from './ports.ts'
 import { EnginePart } from './part.ts'
@@ -9,7 +9,8 @@ import { EnginePart } from './part.ts'
 /**
  * A message for a Channel, by purpose: an Executor's acknowledgement of a person's request it works on, the answer to a
  * person's question once the worker reported it, the result of a ticket that is `ready`, `completed`, `merged`, or `dropped`,
- * or the ticket's current `question` for a person (`attention`). When `ticketId` is omitted, the ticket that `triggerId` reached is used.
+ * the ticket's current `question` for a person (`attention`), or the news that its Assignment stopped before it finished
+ * (`interrupted`). When `ticketId` is omitted, the ticket that `triggerId` reached is used.
  */
 export type ReplyRequest =
   | { purpose: 'acknowledgement'; ticketId: string; triggerId: string; text: string }
@@ -17,14 +18,18 @@ export type ReplyRequest =
   // that was deliberately not taken up is answered rather than left silent.
   | { purpose: 'decline'; triggerId: string; text: string }
   | { purpose: 'answer' | 'result' | 'attention'; ticketId?: string; triggerId?: string; question?: string; text: string }
+  // An interruption is news about one Assignment, not a result of the ticket: the host stopped before its worker finished,
+  // and `assignmentId` keeps a host that stops again from telling the person twice.
+  | { purpose: 'interrupted'; ticketId: string; assignmentId: string; text: string }
 /** A queued message: its id, whether it went out, and whether an earlier request had queued it already. */
 export interface Reply { id: string; status: ReplyStatus; reused: boolean }
 
 /**
  * Replies writes the Engine's messages to Channels through the Outbox port: an acknowledgement, the answer to a person's
- * question, a ticket's result, and its question for a person, each only when its rule allows it, under a deterministic id
- * that keeps it from going out twice (idempotent). The Engine routes `reply` here; Tickets asks it for the acknowledgement
- * an accept carries, and Assignments asks it to withdraw a question a report replaced.
+ * question, a ticket's result, its question for a person, and the news that an Assignment was interrupted, each only when its
+ * rule allows it, under a deterministic id that keeps it from going out twice (idempotent). The Engine routes `reply` here;
+ * Tickets asks it for the acknowledgement an accept carries, and Assignments asks it to withdraw a question a report replaced
+ * and to ask again the question a restart left open.
  */
 export class Replies extends EnginePart {
   /**
@@ -39,7 +44,51 @@ export class Replies extends EnginePart {
   reply(request: ReplyRequest): Reply {
     if (request.purpose === 'acknowledgement') return this.acknowledge(request)
     if (request.purpose === 'decline') return this.decline(request)
+    if (request.purpose === 'interrupted') return this.interrupted(request)
     return this.answer(request)
+  }
+  /**
+   * Queue the notice that an Assignment stopped with the host before its worker finished, in the conversation the ticket
+   * started in. Its id belongs to that Assignment, so a host that stops twice queues it once. A ticket whose conversations
+   * can receive no message gets none: the Assignment it recorded as interrupted says so in the panel.
+   * @throws UserError when the ticket is unknown or has no Channel to tell.
+   */
+  private interrupted(request: Extract<ReplyRequest, { purpose: 'interrupted' }>): Reply {
+    const ticket = this.require(request.ticketId)
+    const channel = this.sourceChannel(ticket)
+    if (!channel) throw new UserError('noChannel')
+    const id = key('interrupted', ticket.id, request.assignmentId)
+    const existing = this.options.outbox.status(id)
+    this.options.outbox.send({ id, channel, text: request.text, kind: 'notice', ticketId: ticket.id })
+    return { id, status: this.options.outbox.status(id) ?? 'pending', reused: existing !== undefined }
+  }
+  /**
+   * Ask a ticket's open question for a person again, where the message that raised it was written, unless that question was
+   * queued before or a person's message reached the ticket after it was asked: their answer may still wait for the worker,
+   * and asking again would talk past them. The id belongs to the Attention, so a host that starts again asks it once and a
+   * later answer keeps its place in the conversation. An open question outlives the Assignment that asked it, which a restart
+   * either keeps or replaces.
+   */
+  reaskAttention(ticket: Ticket): void {
+    const attention = ticket.attention
+    if (!attention || this.answered(ticket)) return
+    const id = key('attention-reply', attention.id)
+    if (this.options.outbox.status(id) !== undefined) return
+    const channel = (attention.triggerId ? this.repo.triggers.get(attention.triggerId)?.channel : undefined) ?? this.sourceChannel(ticket)
+    if (!channel) return
+    try {
+      this.options.outbox.send({ id, channel, text: attention.question, kind: 'reply', purpose: 'attention', ticketId: ticket.id })
+    } catch {
+      /* A question a Channel refuses for its length stays unsent: the main Session asks it in words short enough to send. */
+    }
+  }
+  /**
+   * Whether a person's message reached the ticket after its latest report, which answers the question that report asked. A
+   * message the worker has not read yet counts: it is the answer it will read, so the question is not asked again.
+   */
+  private answered(ticket: Ticket): boolean {
+    const report = latestReport(ticket)
+    return !!report && ticket.inputs.some(input => input.kind === 'trigger' && input.human && !input.context && input.at > report.at)
   }
   /**
    * Queue the message that says a request was deliberately not taken up, in the conversation it was written in. A decline

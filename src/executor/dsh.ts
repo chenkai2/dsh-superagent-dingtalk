@@ -9,6 +9,7 @@ import type { AssessmentOutcome, Assignment, EngineForExecutor, Execution, Execu
   from '../core/index.ts'
 import type { Machine } from '../deployment.ts'
 import { runAsWorker, verifyDirectory } from '../infra/environment.ts'
+import { isChinese } from '../infra/text.ts'
 import type { Settings } from '../policy.ts'
 import type { Store } from '../app/store.ts'
 import { Later, type Effects } from '../app/effects.ts'
@@ -59,9 +60,9 @@ const ticketWorktreeName = (name: string, id: string): string => `${WorktreeName
 export interface ExecutorHost {
   /** DSH Cordis context: agents and their events, and the subprocess service used to run prepare commands. */
   readonly context: Context
-  /** Where the Executor reports what happened to Assignments and Inputs. */
+  /** Where the Executor reports what happened to Assignments and Inputs, and the interruption notice it owes a conversation. */
   readonly engine: Pick<EngineForExecutor, 'assignmentStarted' | 'inputsDelivered' | 'inputsRead' | 'turnEnded' | 'deliveryFailed' | 'report'
-    | 'assignmentInterrupted'>
+    | 'assignmentInterrupted' | 'reply'>
   readonly store: Pick<Store, 'tickets' | 'triggers' | 'set' | 'settings' | 'atomic' | 'afterCommit'>
   /** Durable effect queue through which launches and input deliveries run. */
   readonly effects: Pick<Effects, 'enqueue' | 'handle'>
@@ -134,6 +135,17 @@ const RESUMED = 'This ticket ended earlier and the message that follows, on its 
   + 'for another ticket, hand it back with orchestrator_trigger_handback and report dropped; if it needs nothing, such as thanks, '
   + 'report dropped without a message. Report ready when the follow-up is done. Do not repeat completed work.'
 const RETRIED = 'A person retried this ticket. Continue the assignment from the current worktree, git history and PR state.'
+/**
+ * The notice a person reads in the conversation their ticket started in, in the language of the message that started it as
+ * `isChinese` decides. It names the interruption no result will explain, and says the queued work continues on the next
+ * start, so neither is left to guesswork. Neither the reply that stops it nor a delivery time is promised: a person's words
+ * reach the worker, and the main Session decides a stop, while a stop leaves the notice for the next start.
+ */
+function stoppedNotice(request: string): string {
+  return isChinese(request)
+    ? '这条工单被主机重启打断：本次没有产出结果。重启后会自动继续；需要停止就回复「取消」。'
+    : 'This ticket was interrupted by the host restart: this run produced no result. The work continues automatically after the restart; reply cancel if you want it stopped.'
+}
 /** Formats a policy-change input for the worker; inputs recorded before `effect` existed fall back to a general notice. */
 function policyMessage(effect?: PolicyEffect): string {
   if (!effect) return 'Policy change: the access or admission rules changed. Check that the remaining work stays within the assignment.'
@@ -385,10 +397,12 @@ export class DshExecutor implements Executor {
     if (stopping) await until(stopping, this.host.lifetime)
   }
   /**
-   * On a host stop, for a bounded time: stop each loaded worker's background work, keeping its inbox; then end the collecting
-   * of the jobs left to a person, which were killed, and cancel a worker turn that started meanwhile, keeping its inbox.
+   * On a host stop, for a bounded time: mark the Assignments whose workers were still on them as interrupted and tell their
+   * conversations; then stop each loaded worker's background work, keeping its inbox; then end the collecting of the jobs left
+   * to a person, which were killed, and cancel a worker turn that started meanwhile, keeping its inbox.
    */
   async shutdown(): Promise<void> {
+    this.interrupt()
     const agents = this.host.store.tickets.list().map(ticket => this.host.context.agents.get(workerSessionId(ticket.id) as SessionId))
       .filter((agent): agent is Agent => agent !== undefined)
     const stop = async () => {
@@ -399,6 +413,38 @@ export class DshExecutor implements Executor {
       await Promise.allSettled(running.map(agent => agent.whenIdle()))
     }
     await until(stop(), undefined, SHUTDOWN_STOP_MS)
+  }
+  /**
+   * Marks each Assignment whose worker was still on it as interrupted, the way a restart does, and tells the conversation
+   * its ticket started in. The domain ends that Assignment and queues the replacement with its recovery note, so the next
+   * start launches the work instead of finding a worker that vanished mid-turn, and a person who sends the request again
+   * continues the same ticket. An Assignment the worker had handed off — a result, a question, or a report that it waits for a
+   * person — is left as it is: the person already owes the next move, and a restart asks its question again (see
+   * `Assignments.interrupted`). The notice is queued before that, so a person reads why the work stopped before the question
+   * it left open. A stop that runs again finds no running Assignment and tells nobody twice.
+   */
+  private interrupt(): void {
+    for (const ticket of this.host.store.tickets.open()) {
+      const assignment = runningAssignment(ticket)
+      if (!assignment || !this.inFlight(ticket)) continue
+      try { this.host.engine.reply({ purpose: 'interrupted', ticketId: ticket.id, assignmentId: assignment.id, text: stoppedNotice(sourceTrigger(this.host, ticket)?.text ?? '') }) }
+      catch {
+        /* A ticket whose conversations can receive no message keeps the interrupted Assignment, which the panel shows. */
+      }
+      this.host.engine.assignmentInterrupted(ticket.id, assignment.id)
+    }
+  }
+  /**
+   * Whether a ticket's worker was still on its Assignment when the host stopped: it had not handed the ticket to a person with
+   * a result, a question, or a report that waits, and no Input reached it after that last word.
+   */
+  private inFlight(ticket: Ticket): boolean {
+    const assignment = runningAssignment(ticket)
+    if (!assignment) return false
+    const report = assignment.report
+    // An Input that reached the worker after its last word is work it took on since, whatever that word was.
+    if (report && assignment.deliveredAt && assignment.deliveredAt >= report.at) return true
+    return !report || report.state === 'progress'
   }
   /** Number of open tickets whose worker holds a worker slot: its turn runs, or its shell jobs or subagents still run after its turn ended. */
   activeCount(): number { return this.host.store.tickets.open().filter(ticket => this.running(ticket)).length }
