@@ -6,6 +6,8 @@ import { join } from 'node:path'
 import { z } from 'zod'
 import { THREAD_FILTERS, TICKET_FILTERS, type Api, type ApiResponse, type RouteParams } from './api.ts'
 import { sourceSkills } from './context.ts'
+import { executionRoot } from './execution-environment.ts'
+import { emptyProjectState, installProjectIndex, ProjectIndex } from './projects.ts'
 import { commandMissing, installedPlugins, installedProfileDir, profileMcpServers, serverTarget,
   workerMountFailures } from './mcp-servers.ts'
 import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
@@ -169,11 +171,13 @@ const SourceBlock = z.templateLiteral(['source:', z.string().regex(/^[a-z][a-z0-
 const SettingsBlockSchema = z.union([z.enum(['policy', 'eval', 'executor']), SourceBlock])
 const SaveRequest = z.object({ value: z.unknown(), revision: z.number().int().nonnegative() })
 
-function routes(runtime: HttpHost): Routes {
+function routes(runtime: HttpHost, projects: ProjectIndex | undefined): Routes {
   const { store } = runtime
   const ticket = (id: string) => { if (!store.tickets.get(id)) throw new RouteError(404, 'Ticket not found'); return id }
   const promptBody = (input: { body: (maxBytes?: number) => Promise<unknown> }) => input.body(4 * runtime.machine.promptMaxChars.get() + 4096)
   return {
+    'GET projects': () => projects?.state() ?? emptyProjectState(runtime.machine?.stateDir ?? ''),
+    'POST projects/refresh': () => projects?.requestRefresh() ?? emptyProjectState(runtime.machine?.stateDir ?? ''),
     'GET state': () => stateView(runtime),
     'GET overview': () => overview(views(runtime), runtime.health, policyVersion(store.settings()),
       executorLoad(store, runtime.executor.activeCount()), runtime.setupProblem ?? runtime.feishuProblem),
@@ -262,8 +266,19 @@ function match(table: Routes, method: string, segments: string[]) {
 }
 export function registerHttp(ctx: Context, runtime: HttpHost): () => void {
   if (ctx.webServer.host !== '127.0.0.1') throw new Error('Orchestrator management requires a loopback Web server')
-  const table = routes(runtime)
+  // The index is created here because startup registers these routes before it waits for anything, which is also where a
+  // background scan can start without adding to that wait. A partial host without a state directory gets no index.
+  // TODO(P0 — 项目感知执行): pass the correction store's learned aliases here once it lands; without them the learned layer
+  // stays off and only the manual alias table applies.
+  const projects = runtime.machine?.stateDir ? new ProjectIndex({
+    stateDir: runtime.machine.stateDir,
+    root: () => executionRoot(runtime.store.settings(), runtime.machine.stateDir),
+    logger: message => ctx.logger.warn('dsh-superagent: %s', message),
+  }) : undefined
+  if (projects) { installProjectIndex(ctx, projects); projects.start() }
+  const table = routes(runtime, projects)
   const disposers = [
+    () => projects?.stop(),
     ctx.webServer.register({ kind: 'prefix', path: '/orchestrator', handler: async (req, res) => {
       const url = new URL(req.url ?? '/', 'http://localhost')
       if (!url.pathname.startsWith('/orchestrator/api/')) { res.writeHead(404); res.end(); return }

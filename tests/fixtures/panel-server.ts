@@ -292,8 +292,13 @@ const page = <T>(items: T[]) => ({ items, total: items.length, next_offset: null
 const ticketOf = (id: string) =>
   [...server.tickets.open, ...server.person, ...server.tickets.ended].find(ticket => ticket.id === id) ?? server.ticketDetails[id]
 const SourceSave = z.object({ enabled: z.boolean(), config: z.unknown() })
+/** The project index status the panel fixture answers with; the index itself is exercised in tests/projects.spec.ts. */
+const projectsView = () => ({ generatedAt: null, root: '/tmp/work', count: 0, projects: [], skipped: [], problem: null, generating: false,
+  diff: { from: null, added: [], removed: [], skippedAdded: [], skippedRemoved: [] } })
 
 const ROUTES: { [K in keyof Api]: Route<K> } = {
+  'GET projects': { answer: projectsView },
+  'POST projects/refresh': { answer: projectsView },
   'GET state': { answer: stateView },
   'GET overview': { answer: overviewView },
   'GET search': { query: ['q'], answer: async ({ query }) => {
