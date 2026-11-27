@@ -346,16 +346,34 @@ it('leaves an addressed message ignorable when the Source lists its sender as a 
   expect(h.runtime.store.tickets.list()).toEqual([])
 })
 
-it('posts no acknowledgement when an accepted addressed message has no words at all', async () => {
-  // The title falls back to the whole message, so it is empty only for a message of whitespace. An acknowledgement of just
-  // its prefix ("Received: ") would say nothing, so this posts none.
-  const blank = feishu('20', '   ')
-  h.runtime.receive(blank); await h.runtime.idle()
-  const accepted = await h.route({ kind: 'ignore', trigger_id: blank.id, reason: 'No words.' })
-  const ticket = h.runtime.store.tickets.get((accepted.ticket as { ticket_id: string }).ticket_id)!
-  expect(ticket.title).toBe('')
+it('answers an addressed message that holds no words without creating a ticket', async () => {
+  // A transport hands over a mention whose body is blank or missing (the history and topic reads return "" for a message
+  // without one), and a ticket with no title would be unreadable in every list. It is decided as ignored instead, and the
+  // person still gets an answer rather than silence.
+  const blank = feishu('20', '   '), empty = feishu('23', '')
+  for (const trigger of [blank, empty]) h.runtime.receive(trigger)
   await h.runtime.idle()
-  expect(h.runtime.store.replyStatus(key('ack', blank.id))).toBeUndefined()
+  for (const trigger of [blank, empty]) {
+    expect(await h.route({ kind: 'ignore', trigger_id: trigger.id, reason: 'No words.' })).toMatchObject({ decision: 'ignore',
+      reason: 'It addressed the agent but carries no words, so there was no request to accept' })
+  }
+  await h.runtime.idle()
+  expect(h.runtime.store.tickets.list()).toEqual([])
+  for (const trigger of [blank, empty]) expect(h.runtime.store.replyStatus(key('decline', trigger.id))).toBe('sent')
+  expect(markdowns()).toContain('This message is only a mention, with nothing to act on.')
+})
+
+it('says in the log when a listed bot keeps its own mention ignorable', async () => {
+  // A person's id typed into the bots list would make that person's requests silently ignorable, and nothing else about the
+  // message would reveal it, so the skip is reported.
+  const seeded = h.runtime.store.settings()
+  h.runtime.store.saveSettings({ ...seeded, policy: { ...seeded.policy,
+    sources: { ...seeded.policy.sources, feishu: { ...seeded.policy.sources.feishu!, bots: [{ id: 'ou_alice', name: 'Alice bot' }] } } } })
+  const warn = vi.spyOn(h.ctx.logger, 'warn')
+  const trigger = feishu('19', '@bot 部署完成')
+  h.runtime.receive(trigger); await h.runtime.idle()
+  expect(await h.route({ kind: 'ignore', trigger_id: trigger.id, reason: 'A bot status.' })).toMatchObject({ decision: 'ignore' })
+  expect(warn).toHaveBeenCalledWith(expect.stringContaining('ignorable'), trigger.id, trigger.actor.id)
 })
 
 it('titles an accepted addressed message by its own first line without the mention, and keeps that line when only a mention is left', async () => {

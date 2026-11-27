@@ -3,8 +3,8 @@ import { createHash } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { z } from 'zod'
-import { UserError, followupOwners, key, reasonText, type Decision, type DecisionKind, type EngineForMainSession, type EngineForPeople }
-  from '../../core/index.ts'
+import { UserError, followupOwners, key, reasonText, type Decision, type DecisionKind, type EngineForMainSession, type EngineForPeople,
+  type Trigger } from '../../core/index.ts'
 import { IM_WORDS, NOTE_WORDS, isChinese, wordCount } from '../../infra/text.ts'
 import { listedBot } from '../../policy.ts'
 import { AssessmentSchema, EvalReadSchema, WorktreeNameSchema, type MasterAssessor } from '../assessment.ts'
@@ -89,6 +89,22 @@ type Routed = { decision?: DecisionKind; reason: string; ticketId?: string | und
   acceptedAddressed?: boolean }
 /** Why an addressed message could not become the accept it asked for; the Engine's own reason follows it. */
 const NOT_ACCEPTED = 'It addressed the agent, so it is a request, but no ticket was created'
+/** Why an addressed message with no words is recorded as ignored instead of accepted. */
+const NO_WORDS = 'It addressed the agent but carries no words, so there was no request to accept'
+/**
+ * Answer an addressed message that holds no words, in the conversation that wrote it. A person who mentioned the agent
+ * gets an answer even when there is nothing to carry out, and the reply says which message it is about.
+ * @returns whether the reply was queued; a message with no Channel cannot receive one.
+ */
+function answerWithoutWords(host: MainToolsHost, trigger: Trigger): boolean {
+  try {
+    host.engine.reply({ purpose: 'decline', triggerId: trigger.id, text: 'This message is only a mention, with nothing to act on.' })
+    return true
+  } catch (error) {
+    host.context.logger.warn('dsh-superagent could not answer trigger %s, which holds no words: %s', trigger.id, String(error))
+    return false
+  }
+}
 /** One line of a message without the mentions that addressed the agent, whitespace collapsed. */
 const bareLine = (line: string): string =>
   line.replace(/<@[^>\n]*>/g, ' ').replace(/(?:^|\s)@[\p{L}\p{N}_.-]+/gu, ' ').replace(/\s+/g, ' ').trim()
@@ -156,15 +172,25 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
       // `addressed` alone is not that fact: a bot's mention is an inferred candidate the rules decide, so it stays ignorable,
       // and a sender the Source lists as a bot is one whatever the Source reports about `human` (docs/007, docs/008).
       const trigger = host.store.triggers.get(item.trigger_id)
-      if (trigger?.human && trigger.addressed && !listedBot(host.store.settings(), trigger.actor)) {
+      const bot = trigger?.human && trigger.addressed ? listedBot(host.store.settings(), trigger.actor) : undefined
+      // The bots list is an operator's declaration, so a person's id typed there would make that person's requests silently
+      // ignorable and nothing else about the message would reveal it: the skip says so.
+      if (trigger && bot) host.context.logger.warn('dsh-superagent keeps trigger %s from %s ignorable: the Source lists that sender as a bot',
+        trigger.id, trigger.actor.id)
+      if (trigger?.human && trigger.addressed && !bot) {
         const title = addressedTitle(trigger.text)
-        // A message of whitespace alone has no request to name, so it is accepted with no acknowledgement rather than
-        // posting a bare "Received: ".
-        const acknowledgement = title === '' ? {} : { acknowledgement: addressedAcknowledgement(trigger.text, title) }
+        // A message whose whole body is whitespace or missing asks for nothing, and a ticket with no title would hide in every
+        // list. Recording it as ignored also ends its Eval, which a refusal would leave to time out; the answer tells the
+        // person it was read.
+        if (title === '') {
+          const decision = host.engine.decide(item.trigger_id, { kind: 'ignore', reason: NO_WORDS })
+          return { ...fromDecision(decision), triggerIds: decision.triggerIds, declined: answerWithoutWords(host, trigger) }
+        }
+        const acknowledgement = addressedAcknowledgement(trigger.text, title)
         const before = host.store.triggers.disposition(item.trigger_id)?.decisionId
         try {
           const decision = host.engine.decide(item.trigger_id, { kind: 'accept', title, scope: title, reason: { code: 'explicitRouted' },
-            ...acknowledgement,
+            acknowledgement,
             name: `work-${createHash('sha1').update(item.trigger_id).digest('hex').slice(0, 6)}`,
             // Recorded on the Decision, so the fallback stays visible after the tool result is gone.
             audit: { acceptedAddressed: true } })
