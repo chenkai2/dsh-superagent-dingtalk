@@ -1,15 +1,15 @@
 /** Execution status view (active Tickets and pause control) and Execution settings group (Executor capacity and workspace environment). */
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { TICKET_FILTERS, type TicketFilter } from '../app/api.ts'
 import type { WorkerMountFailure } from '../app/mcp-servers.ts'
 import { LIMITS } from '../limits.ts'
-import { usePoll, type ProjectIndexView, type SettingsView, type SourceView, type StateView } from './api.ts'
+import { ApiError, usePoll, type ProjectIndexView, type SettingsView, type SourceView, type StateView } from './api.ts'
 import { Button, DisclosureRow, Icon, InfoTip, Input, Pill } from './controls.tsx'
 import { SaveBar } from './draft.tsx'
 import { useAction, usePanel } from './provider.tsx'
 import { TicketLine } from './rows.tsx'
 import { ConfigHistory, Field, Fields, ModelField, numberOf, useBlockDraft, useSettings } from './settings-kit.tsx'
-import { localized, when } from './text.ts'
+import { errorText, localized, when, type T } from './text.ts'
 import { ConfirmButton, Hint, LabelValue, LoadMore, LoadState, Section, StatusHead, When } from './widgets.tsx'
 
 export function ExecutionStatus({ filter: current, state, reload }: {
@@ -52,34 +52,77 @@ export function ExecutionStatus({ filter: current, state, reload }: {
   </>
 }
 
+/** Word a failed index read: a 404 the host cannot route reads differently from an error the host reported. */
+const indexFailure = (t: T, failure: Error): string => failure instanceof ApiError && failure.status === 404
+  && failure.details.unreachable ? t('projectIndexMissing') : t('projectIndexUnreadable', { detail: errorText(failure) })
+
 /**
  * The project index the Executor resolves a Ticket's project from: when it was generated, how many repositories it holds,
- * what it left out, why generating it failed, and how it differs from the previous snapshot.
+ * what it left out, why generating it failed, how it differs from the previous snapshot, and why it cannot be read.
+ * The section stays on screen when a read fails, because a route or field this host does not have must not look like a
+ * feature that does not exist; numbers from an earlier read stay dated, and a host before its first scan is not zero.
  */
 function ProjectIndex() {
   const { t, endpoint } = usePanel()
-  const [open, setOpen] = useState(false)
+  const [diffOpen, setDiffOpen] = useState(false)
+  const [skipDiffOpen, setSkipDiffOpen] = useState(false)
+  const [skippedOpen, setSkippedOpen] = useState(false)
   // The index changes when git does, not every poll, so it is read less often than Tickets.
-  const { data, reload } = usePoll(() => endpoint<ProjectIndexView>('projects', 'GET'), [], 15_000)
+  const { data, error, reload } = usePoll(() => endpoint<ProjectIndexView>('projects', 'GET'), [], 15_000)
   const refresh = useAction(() => endpoint<ProjectIndexView>('projects/refresh', 'POST'), { reload })
-  // A host from before project-scoped execution has no index: there is nothing to report, so the section stays out.
-  if (!data) return null
-  const projects = data.projects ?? [], skipped = data.skipped ?? []
-  const added = data.diff?.added ?? [], removed = data.diff?.removed ?? []
-  return <Section title={t('projectIndex')} count={projects.length} hint={t('projectIndexHint')}
+  // A failed read keeps the last payload on screen, so its age is recorded: unlabelled numbers would read as current.
+  const read = useRef<string>(undefined)
+  useEffect(() => { if (data && !error) read.current = new Date().toISOString() }, [data, error])
+  const generated = data?.generatedAt ?? undefined
+  const generating = data?.generating === true
+  const stale = !!data && !!error
+  const projects = data?.projects
+  const skipped = data?.skipped ?? []
+  const diff = data?.diff
+  const added = diff?.added ?? [], removed = diff?.removed ?? []
+  const skippedAdded = diff?.skippedAdded ?? [], skippedRemoved = diff?.skippedRemoved ?? []
+  const changed = added.length + removed.length > 0, skipsChanged = skippedAdded.length + skippedRemoved.length > 0
+  // A snapshot with no earlier one to compare against says so: a host that just restarted reports `from: null`.
+  const first = !!diff && diff.from == null && !changed && !skipsChanged && !generating
+  return <Section title={t('projectIndex')} count={generated ? projects?.length : undefined} hint={t('projectIndexHint')}
     action={<Button variant="outline" size="sm" icon={<Icon name="refresh" />} disabled={refresh.busy}
       onClick={() => void refresh.run()}>{t('projectIndexRefresh')}</Button>}>
     <div className="dt-project-index">
       <div className="dt-row-meta">
-        <LabelValue label={t('projectIndexGenerated')} value={<When at={data.generatedAt} />} />
-        {added.length > 0 && <LabelValue label={t('projectIndexAdded')} value={added.length} />}
-        {removed.length > 0 && <LabelValue label={t('projectIndexRemoved')} value={removed.length} />}
-        {data.diff && !added.length && !removed.length && <span>{t('projectIndexUnchanged')}</span>}
+        {/* A count and a time come only from what the host sent: a missing snapshot reads as missing, never as zero. */}
+        {stale ? <LabelValue label={t('projectIndexLastRead')} value={<When at={read.current ?? generated} />} />
+          : generated ? <LabelValue label={t('projectIndexGenerated')} value={<When at={generated} />} />
+          : generating ? null : data ? <LabelValue label={t('projectIndexGenerated')} value={t('empty')} />
+          : !error ? <span>{t('loading')}</span> : null}
+        {generating && <span>{t('projectIndexGenerating')}</span>}
+        {!generating && !changed && diff && (first ? <span>{t('projectIndexFirstSnapshot')}</span>
+          : !skipsChanged && <span>{t('projectIndexUnchanged')}</span>)}
       </div>
-      {/* A failure keeps the projects it did collect above it; the reason is what a person acts on. */}
-      {data.problem && <p className="dt-error dt-project-index-problem" role="alert">
+      {error && <p className="dt-error dt-project-index-problem" role="alert">{indexFailure(t, error)}</p>}
+      {/* A failed generation still lists the projects it did collect; the reason is what a person acts on. */}
+      {data?.problem && <p className="dt-error dt-project-index-problem" role="alert">
         {t('projectIndexProblem')}{data.problem}</p>}
-      {skipped.length > 0 && <DisclosureRow icon={<Icon name="filter" />} open={open} onToggle={() => setOpen(!open)}
+      {/* A project that appeared or disappeared is named, so a count that dropped can be traced to repositories. */}
+      {changed && <DisclosureRow icon={<Icon name="history" />} open={diffOpen} onToggle={() => setDiffOpen(!diffOpen)}
+        title={t('projectIndexDiffTitle', { added: added.length, removed: removed.length })}>
+        <div className="dt-disclosure-body">
+          {added.length > 0 && <div className="dt-diff-names">
+            {t('projectIndexAdded')}{t('labelSeparator')}{added.join(t('listSeparator'))}</div>}
+          {removed.length > 0 && <div className="dt-diff-names">
+            {t('projectIndexRemoved')}{t('labelSeparator')}{removed.join(t('listSeparator'))}</div>}
+        </div>
+      </DisclosureRow>}
+      {/* A checkout the scan newly skips is how a permission or corruption problem reaches a person. */}
+      {skipsChanged && <DisclosureRow icon={<Icon name="alert" />} open={skipDiffOpen} onToggle={() => setSkipDiffOpen(!skipDiffOpen)}
+        title={t('projectIndexSkipDiffTitle', { added: skippedAdded.length, removed: skippedRemoved.length })}>
+        <div className="dt-disclosure-body">
+          {skippedAdded.length > 0 && <div className="dt-diff-names">
+            {t('projectIndexSkippedAdded')}{t('labelSeparator')}{skippedAdded.join(t('listSeparator'))}</div>}
+          {skippedRemoved.length > 0 && <div className="dt-diff-names">
+            {t('projectIndexSkippedRemoved')}{t('labelSeparator')}{skippedRemoved.join(t('listSeparator'))}</div>}
+        </div>
+      </DisclosureRow>}
+      {skipped.length > 0 && <DisclosureRow icon={<Icon name="filter" />} open={skippedOpen} onToggle={() => setSkippedOpen(!skippedOpen)}
         title={t('projectIndexSkipped', { count: skipped.length })}>
         <div className="dt-disclosure-body">
           <table className="dt-table">

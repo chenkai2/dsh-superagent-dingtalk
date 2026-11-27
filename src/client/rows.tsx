@@ -2,33 +2,38 @@
 import { useState } from 'react'
 import type { DecisionRow, ThreadFacts, ThreadRow, TicketProjectView, TicketRow } from './api.ts'
 import { ticketProject } from './api.ts'
-import { Icon, Tag, type TagTone } from './controls.tsx'
+import { Icon, InfoTip, Tag, type TagTone } from './controls.tsx'
 import { decisionMark, threadMark, ticketMark } from './marks.ts'
 import { usePanel } from './provider.tsx'
 import { actorName, localized, readableMarkers, reasonLabel, valueLabel } from './text.ts'
 import { ActionLink, ConfirmButton, LabelValue, SessionButton, StageMark, When } from './widgets.tsx'
 
-/** How strongly a project name is established, from a name in the message down to a guess. */
-const PROJECT_TONES: Readonly<Record<string, TagTone>> = { named: 'info', indexed: 'neutral', alias: 'quiet', inferred: 'warning' }
+/** How strongly a project name is established, from a name in the message down to an alias table entry. */
+const PROJECT_TONES: Readonly<Record<string, TagTone>> = { named: 'info', indexed: 'neutral', alias: 'quiet' }
 
 /**
  * The project a Ticket runs in and how code resolved it, plus any correction a person made. A named project reads
- * strongest and an alias weakest; an inferred project is the one strength marked for a person to check.
+ * strongest and an alias weakest, and the tooltip says what the basis means without being hover-only.
  */
-function ProjectFacts({ project, projectCorrections = [] }: TicketProjectView) {
+function ProjectFacts({ project, projectCorrections }: TicketProjectView) {
   const { t } = usePanel()
+  const corrections = projectCorrections ?? []
+  const name = project?.name
   const basis = project?.basis ?? ''
   const label = valueLabel(t, 'projectBasis', basis)
   return <>
-    {project && <span className="dt-project" data-basis={basis || undefined} title={t('projectBasisHint')}>
+    {name && <span className="dt-project" data-basis={basis || undefined}>
       <Tag tone={PROJECT_TONES[basis] ?? 'neutral'}>
-        {basis === 'inferred' && <Icon name="alert" size={12} />}{project.name}
-        {label && <span className="dt-project-basis">{label}</span>}
+        <span className="dt-project-name">{name}</span>
+        {/* A no-break space keeps the basis its own word: adjacent elements otherwise read out as one word. */}
+        {label && <span className="dt-project-basis">{'\u00a0'}{label}</span>}
       </Tag>
+      {/* Reachable by pointer, keyboard focus and touch, unlike a title attribute, and read out as the basis explanation. */}
+      <span className="dt-project-hint"><InfoTip text={t('projectBasisHint')} /></span>
     </span>}
-    {projectCorrections.map((correction, index) => correction.from && correction.to
-      ? <span key={index} className="dt-project-correction">{t('projectCorrected', { from: correction.from, to: correction.to })}</span>
-      : null)}
+    {corrections.map((correction, index) => !correction.to ? null
+      : <span key={index} className="dt-project-correction">{correction.from
+        ? t('projectCorrected', { from: correction.from, to: correction.to }) : t('projectCorrectedTo', { to: correction.to })}</span>)}
   </>
 }
 
