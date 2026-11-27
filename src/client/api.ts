@@ -57,6 +57,14 @@ async function api<T>(messages: ApiMessages, path: string, method: string, body?
   return value as T
 }
 
+/**
+ * Calls one management endpoint by literal path, for a route the host's typed route table does not list yet.
+ * Errors are mapped exactly as `call` maps them, so a host without the route reads as an ordinary 404 rather than a failure.
+ */
+export function apiPath<T>(messages: ApiMessages, path: string, method: 'GET' | 'POST'): Promise<T> {
+  return api<T>(messages, path, method)
+}
+
 const HIDDEN_FACTOR = 6
 const same = (a: unknown, b: unknown) => a === b || JSON.stringify(a) === JSON.stringify(b)
 /**
@@ -138,3 +146,45 @@ export type PromptsView = ApiResponse<'GET prompts'>
 export type PromptConfig = PromptsView['defaults']
 export type ThreadFacts = TicketRow['threads'][number]
 export type Actor = TriggerRow['actor']
+
+/** A repository the work root holds, as the project index records it. */
+export interface ProjectEntry { name: string; path?: string; remote?: string }
+/** The index's difference from the snapshot before it, by project name and by skipped path. */
+export interface ProjectIndexDiff {
+  /** The previous snapshot's time, or `null` when there was none to compare with, which a restarted host also reports. */
+  from?: string | null
+  added?: readonly string[]
+  removed?: readonly string[]
+  /** Paths the scan now skips and did not before: a permission or corruption problem first shows here. */
+  skippedAdded?: readonly string[]
+  skippedRemoved?: readonly string[]
+}
+/**
+ * The project index the host generates in the background, and its difference from the previous snapshot.
+ * Every field is optional: a host from before project-scoped execution has no index at all, and a partly written one
+ * must render as what it does hold instead of throwing or inventing a number.
+ */
+export interface ProjectIndexView {
+  /** When the last scan finished, or `null` before the first one. */
+  generatedAt?: string | null
+  root?: string
+  projects?: readonly ProjectEntry[]
+  /** Directories the index left out, with the host's reason. */
+  skipped?: readonly { path: string; why: string }[]
+  /** Why the index could not be generated or written; the projects it did collect stay listed. */
+  problem?: string | null
+  /** True while a scan runs: a host before its first scan reports no projects, which is not zero projects. */
+  generating?: boolean
+  diff?: ProjectIndexDiff
+}
+/**
+ * The project facts a host with project-scoped execution adds to a Ticket: the repository it works in, how code resolved
+ * it, and what a person said the project should be instead. A host without them sends neither field.
+ */
+export interface TicketProjectView {
+  project?: { name?: string; path?: string; basis?: string } | null
+  /** Oldest first, append-only, so a repeating mistake stays visible. `from` is absent when the Ticket held no project. */
+  projectCorrections?: readonly { from?: string | null; to?: string; at?: string }[] | null
+}
+/** Read a Ticket's project facts; the fields are absent for a host from before project-scoped execution. */
+export const ticketProject = (ticket: object): TicketProjectView => ticket as TicketProjectView

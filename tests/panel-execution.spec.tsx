@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 // The Execution status, a Ticket, and the Execution settings.
 import { act } from 'react'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
+import type { ProjectIndexView, TicketProjectView, TicketRow } from '../src/client/api.ts'
 import { en, zh } from '../src/client/locales.ts'
 import { usePanel, mount, remount, all, find, tab, click, type, text, field, at } from './fixtures/panel.tsx'
 import { MEMBER, server, ticketSummary, threadSummary } from './fixtures/panel-server.ts'
@@ -221,4 +222,217 @@ it('sends one stop for a double click on Confirm', async () => {
   const confirm = find(zh.confirm)
   await act(async () => { confirm.click(); confirm.click() })
   expect(server.requests.filter(request => request.path === 'tickets/t1/stop')).toHaveLength(1)
+})
+
+/**
+ * The project index the Execution page reports, and the project facts a Ticket card carries. Both read fields a host adds
+ * with project-scoped execution, so both are exercised against fixtures rather than the shared fake host's route table.
+ */
+const projectIndex = (fields: Partial<ProjectIndexView> = {}): ProjectIndexView => ({
+  generatedAt: '2026-11-27T07:00:00Z', root: '/srv/work', generating: false,
+  projects: [{ name: 'portal.example.com', path: '/srv/work/portal.example.com' },
+    { name: 'shop.example.com', path: '/srv/work/shop.example.com', remote: 'git@example.test:shop.git' }],
+  skipped: [{ path: '/srv/work/broken', why: 'not a git repository' }], problem: null,
+  diff: { from: '2026-11-26T07:00:00Z', added: ['portal.example.com'], removed: ['old.example.com'],
+    skippedAdded: ['/srv/work/locked'], skippedRemoved: [] }, ...fields,
+})
+/** The state a host reports while its first scan runs: no snapshot, so no projects and nothing to compare. */
+const SCANNING: ProjectIndexView = { generatedAt: null, root: '/srv/work', projects: [], skipped: [], problem: null,
+  generating: true, diff: { from: null, added: [], removed: [], skippedAdded: [], skippedRemoved: [] } }
+type ProjectAnswer = { view: ProjectIndexView } | { failure: { status: number; body?: unknown } }
+/**
+ * Answer the two project index endpoints in front of the shared fake host, record the paths they were asked for, and let a
+ * test change what they answer between reads.
+ */
+function serveProjectIndex(initial: { read: ProjectAnswer; refresh?: ProjectAnswer }) {
+  const forward = globalThis.fetch
+  const state = { ...initial }
+  const requests: { path: string; method: string }[] = []
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const { pathname } = new URL(String(input), 'http://127.0.0.1:3082')
+    if (pathname !== '/orchestrator/api/projects' && pathname !== '/orchestrator/api/projects/refresh') return forward(input, init)
+    requests.push({ path: pathname, method: init?.method ?? 'GET' })
+    const answer = pathname.endsWith('/refresh') ? state.refresh ?? state.read : state.read
+    if ('failure' in answer) {
+      return new Response(answer.failure.body === undefined ? null : JSON.stringify(answer.failure.body),
+        { status: answer.failure.status, headers: { 'content-type': 'application/json' } })
+    }
+    return new Response(JSON.stringify(answer.view), { status: 200, headers: { 'content-type': 'application/json' } })
+  }))
+  return { requests, answer: (next: Partial<typeof initial>) => Object.assign(state, next) }
+}
+/** The three shapes a project index request fails in, as the client sees them. */
+const INDEX_FAILURES = {
+  unreadable500: { status: 500, body: { error: 'projects.json is unreadable' } },
+  empty404: { status: 404 },
+  unknown404: { status: 404, body: { error: 'Unknown operation' } },
+} as const
+const indexMeta = () => all('.dt-project-index .dt-row-meta .dt-lv').map(item => [item.querySelector('.dt-lv-label')?.textContent,
+  item.querySelector('.dt-lv-value')?.textContent])
+/** The project count in the section header: the badge lives in the title, not in the section body. */
+const indexCount = () => document.querySelector('.dt-project-index')?.closest('.dt-section')
+  ?.querySelector('.dt-section-title .dt-count')?.textContent
+  ?? undefined
+/** Add project facts to a Ticket fixture without widening the shared fake host's row type. */
+const withProject = (ticket: TicketRow, facts: TicketProjectView) => Object.assign(ticket, facts)
+
+it('reports the project index on the Execution page: when it was generated, how many projects, what changed and what it skipped',
+  async () => {
+  const index = serveProjectIndex({ read: { view: projectIndex({ problem: 'git rev-parse timed out in /srv/work/broken' }) } })
+  await mount()
+  await click(zh['tab.execution'])
+  expect(document.querySelector('.dt-section-name')?.textContent).toBe(zh.projectIndex)
+  expect(document.querySelector('.dt-section-title .dt-count')?.textContent).toBe('2')
+  expect(indexMeta()).toEqual([[zh.projectIndexGenerated, expect.any(String)]])
+  expect(document.querySelector('.dt-project-index time')?.getAttribute('datetime')).toBe('2026-11-27T07:00:00Z')
+  // A generation failure is stated with the reason the host gave, in the interface's words before it.
+  expect(document.querySelector('.dt-project-index-problem')?.textContent)
+    .toBe(`${zh.projectIndexProblem}git rev-parse timed out in /srv/work/broken`)
+  // What changed since the last snapshot names the repositories, so a count that dropped can be traced.
+  const projectDiff = () => zh.projectIndexDiffTitle.replace('{added}', '1').replace('{removed}', '1')
+  await click(projectDiff())
+  expect(all('.dt-project-index .dt-diff-names').map(row => row.textContent)).toEqual([
+    `${zh.projectIndexAdded}${zh.labelSeparator}portal.example.com`, `${zh.projectIndexRemoved}${zh.labelSeparator}old.example.com`,
+  ])
+  // A checkout the scan newly skips is how a permission problem reaches a person, with its path.
+  await click(zh.projectIndexSkipDiffTitle.replace('{added}', '1').replace('{removed}', '0'))
+  expect(all('.dt-project-index .dt-diff-names').map(row => row.textContent))
+    .toContain(`${zh.projectIndexSkippedAdded}${zh.labelSeparator}/srv/work/locked`)
+  // A skipped directory is behind its own disclosure, with its path and reason.
+  expect(text()).not.toContain('not a git repository')
+  await click(zh.projectIndexSkipped.replace('{count}', '1'))
+  expect(all('.dt-project-index .dt-table td').map(cell => cell.textContent)).toEqual(['/srv/work/broken', 'not a git repository'])
+  // Refreshing asks the host to regenerate and then reads the index again, on the two paths the host answers.
+  await click(zh.projectIndexRefresh)
+  expect(index.requests.map(request => `${request.method} ${request.path}`)).toEqual([
+    'GET /orchestrator/api/projects', 'POST /orchestrator/api/projects/refresh', 'GET /orchestrator/api/projects',
+  ])
+  // No change says so once, and a snapshot with nothing earlier to compare against says that instead.
+  index.answer({ read: { view: projectIndex({ diff: { from: '2026-11-26T07:00:00Z', added: [], removed: [] } }) } })
+  await click(zh.projectIndexRefresh)
+  expect(text()).toContain(zh.projectIndexUnchanged)
+  index.answer({ read: { view: projectIndex({ diff: { from: null, added: [], removed: [] } }) } })
+  await click(zh.projectIndexRefresh)
+  expect(text()).toContain(zh.projectIndexFirstSnapshot)
+  expect(text()).not.toContain(zh.projectIndexUnchanged)
+  // The same section in English, in sentence case.
+  serveProjectIndex({ read: { view: projectIndex() } })
+  await remount(en)
+  await click(en['tab.execution'])
+  expect(document.querySelector('.dt-section-name')?.textContent).toBe(en.projectIndex)
+  expect(find(en.projectIndexRefresh).textContent).toBe(en.projectIndexRefresh)
+  expect(indexMeta()).toEqual([[en.projectIndexGenerated, expect.any(String)]])
+})
+
+it('says when the project index cannot be read, in every failure form, and marks data it read earlier as stale', async () => {
+  const expected = {
+    unreadable500: `${zh.projectIndexUnreadable.replace('{detail}', '')}projects.json is unreadable`,
+    // An empty 404 is what DSH's web server answers while dsh-superagent restarts, and what a host without the route answers.
+    empty404: zh.projectIndexMissing,
+    unknown404: `${zh.projectIndexUnreadable.replace('{detail}', '')}Unknown operation`,
+  }
+  for (const [position, [form, failure]] of Object.entries(INDEX_FAILURES).entries()) {
+    serveProjectIndex({ read: { failure } })
+    // A fresh panel per form: mount() once, then replace it, so no earlier root answers for this one.
+    await (position === 0 ? mount() : remount())
+    await click(zh['tab.execution'])
+    // The section stays, says why, and keeps its action: silence would hide a path or field the host does not have.
+    expect(document.querySelector('.dt-section-name')?.textContent).toBe(zh.projectIndex)
+    expect(all('.dt-project-index [role="alert"]').map(alert => alert.textContent)).toEqual([expected[form as keyof typeof expected]])
+    expect(find(zh.projectIndexRefresh)).toBeTruthy()
+    // Nothing is counted or timed from a failed read, and nothing is invented in its place.
+    expect(indexCount()).toBeUndefined()
+    expect(document.querySelector('.dt-project-index time')).toBeNull()
+    expect(indexMeta()).toEqual([])
+  }
+  // A read that fails after one succeeded keeps the last payload but dates it, rather than passing it off as current.
+  const index = serveProjectIndex({ read: { view: projectIndex() } })
+  await remount()
+  await click(zh['tab.execution'])
+  expect(document.querySelector('.dt-project-index time')?.getAttribute('datetime')).toBe('2026-11-27T07:00:00Z')
+  index.answer({ read: { failure: INDEX_FAILURES.unreadable500 }, refresh: { view: projectIndex() } })
+  await click(zh.projectIndexRefresh)
+  expect(all('.dt-project-index [role="alert"]').map(alert => alert.textContent))
+    .toEqual([`${zh.projectIndexUnreadable.replace('{detail}', '')}projects.json is unreadable`])
+  expect(indexMeta()).toEqual([[zh.projectIndexLastRead, expect.any(String)]])
+  // The numbers it still shows come from the payload it read before, and the count of that payload is unchanged.
+  expect(indexCount()).toBe('2')
+})
+
+it('keeps the last payload and reports the failure when a refresh fails, rather than dropping what it shows', async () => {
+  const index = serveProjectIndex({ read: { view: projectIndex() } })
+  await mount()
+  await click(zh['tab.execution'])
+  index.answer({ refresh: { failure: { status: 500, body: { error: 'scan failed' } } } })
+  await click(zh.projectIndexRefresh)
+  expect(document.querySelector('.dt-toast')?.textContent).toBe('scan failed')
+  // A failed refresh leaves the read alone: its time, count and projects are the ones read before it.
+  expect(document.querySelector('.dt-project-index time')?.getAttribute('datetime')).toBe('2026-11-27T07:00:00Z')
+  expect(indexCount()).toBe('2')
+  expect(all('.dt-project-index [role="alert"]')).toEqual([])
+})
+
+it('shows no count, time or project pill it was not given, instead of an empty shell with zeroes', async () => {
+  // A host before its first scan reports no snapshot: that is generating, not zero repositories.
+  serveProjectIndex({ read: { view: SCANNING } })
+  await mount()
+  await click(zh['tab.execution'])
+  expect(document.querySelector('.dt-section-name')?.textContent).toBe(zh.projectIndex)
+  expect(text()).toContain(zh.projectIndexGenerating)
+  expect(indexCount()).toBeUndefined()
+  expect(document.querySelector('.dt-project-index time')).toBeNull()
+  // A first scan says nothing about a difference from a snapshot it does not have.
+  expect(text()).not.toContain(zh.projectIndexUnchanged)
+  expect(text()).not.toContain(zh.projectIndexFirstSnapshot)
+  // A payload with a time but no projects counts nothing rather than counting zero.
+  serveProjectIndex({ read: { view: { generatedAt: '2026-11-27T07:00:00Z' } } })
+  await remount()
+  await click(zh['tab.execution'])
+  expect(indexCount()).toBeUndefined()
+  expect(text()).not.toContain(zh.projectIndexGenerating)
+  expect(indexMeta()).toEqual([[zh.projectIndexGenerated, expect.any(String)]])
+  // No diff at all says nothing: there is no snapshot to compare, which is not the same as nothing having changed.
+  expect(text()).not.toContain(zh.projectIndexUnchanged)
+  expect(text()).not.toContain(zh.projectIndexFirstSnapshot)
+  // A Ticket without project facts, or with a project that has no name, keeps its card as it was.
+  server.tickets.open = [withProject(ticketSummary(), {}),
+    withProject(ticketSummary({ id: 't2' }), { project: {}, projectCorrections: null })]
+  await remount()
+  await click(zh['tab.execution'])
+  expect(document.querySelector('.dt-project')).toBeNull()
+  expect(all('.dt-project-correction')).toEqual([])
+})
+
+it('marks a Ticket card with its project and how code resolved it, and with each correction a person made', async () => {
+  server.tickets.open = [
+    withProject(ticketSummary(), { project: { name: 'portal.example.com', basis: 'named' } }),
+    withProject(ticketSummary({ id: 't2', title: '索引工单' }), { project: { name: 'shop.example.com', basis: 'indexed' } }),
+    withProject(ticketSummary({ id: 't3', title: '别名工单' }), { project: { name: 'cart.example.com', basis: 'alias' },
+      projectCorrections: [{ from: 'portal.example.com', to: 'cart.example.com', at: '2026-11-27T06:00:00Z' },
+        // A ticket that had recorded no project names nothing as `from`, so the correction reads as what it is.
+        { to: 'cart.example.com', at: '2026-11-27T06:30:00Z' }] }),
+  ]
+  serveProjectIndex({ read: { failure: INDEX_FAILURES.empty404 } })
+  await mount()
+  await click(zh['tab.execution'])
+  const cards = () => all('.dt-project').map(card => ({ basis: card.getAttribute('data-basis'),
+    name: card.querySelector('.dt-project-name')?.textContent, label: card.querySelector('.dt-project-basis')?.textContent?.trim(),
+    tone: card.querySelector('.dt-tag')?.getAttribute('data-tone') }))
+  // Three strengths a person can tell apart: a named project reads strongest, an alias weakest, an index match in between.
+  expect(cards()).toEqual([
+    { basis: 'named', name: 'portal.example.com', label: zh['projectBasis.named'], tone: 'info' },
+    { basis: 'indexed', name: 'shop.example.com', label: zh['projectBasis.indexed'], tone: 'neutral' },
+    { basis: 'alias', name: 'cart.example.com', label: zh['projectBasis.alias'], tone: 'quiet' },
+  ])
+  expect(all('.dt-project-correction').map(correction => correction.textContent)).toEqual([
+    zh.projectCorrected.replace('{from}', 'portal.example.com').replace('{to}', 'cart.example.com'),
+    zh.projectCorrectedTo.replace('{to}', 'cart.example.com'),
+  ])
+  // The basis is explained where a person can reach it: focusable, touchable, and read out as its own name.
+  expect(all('.dt-project .dt-project-hint .dt-info').map(tip => tip.getAttribute('aria-label')))
+    .toEqual([zh.projectBasisHint, zh.projectBasisHint, zh.projectBasisHint])
+  // The same facts in English, in sentence case.
+  await remount(en)
+  await click(en['tab.execution'])
+  expect(cards().map(card => card.label)).toEqual([en['projectBasis.named'], en['projectBasis.indexed'], en['projectBasis.alias']])
 })
