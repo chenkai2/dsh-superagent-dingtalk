@@ -639,6 +639,7 @@ const TEXT = {
   'reason.directionUnsettled': ['实现意图或目标未确定，或还要产品或设计决定', 'Intent or target not settled, or a product or design decision is still open'],
   'reason.noRuleMatched': ['没有启用的准入规则匹配', 'No enabled admission rule matched'],
   'reason.ignoredFromCard': ['仅凭候选卡片忽略，未经规则研判', 'Ignored from its card, without a rule assessment'],
+  'reason.noWords': ['消息只有 @ 提及、没有正文，没有可执行的内容', 'The message held no words, so it asked for nothing'],
   'reason.observed': ['观察模式：本会接单（{text}）', 'Observe mode: would accept ({text})'],
   'reason.explicitRouted': ['名单里的人明确请求，由主 Session 接单', 'Explicit request from someone on the list, accepted by the main Session'],
   'reason.legacyImport': ['从旧版工单记录导入', 'Imported from a legacy Ticket record'],

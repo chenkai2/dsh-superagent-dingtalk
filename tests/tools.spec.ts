@@ -355,8 +355,10 @@ it('answers an addressed message that holds no words without creating a ticket',
   await h.runtime.idle()
   for (const trigger of [blank, empty]) {
     expect(await h.route({ kind: 'ignore', trigger_id: trigger.id, reason: 'No words.' })).toMatchObject({ decision: 'ignore',
-      reason: 'It addressed the agent but carries no words, so there was no request to accept' })
+      reason: 'The message held no words, so it asked for nothing' })
   }
+  // The Decision carries its own code, so a review can tell this ignore from one the model chose.
+  expect(h.runtime.store.decisions.byThread(`feishu:${CHAT}:om_20`).at(-1)!.reason).toEqual([{ code: 'noWords' }])
   await h.runtime.idle()
   expect(h.runtime.store.tickets.list()).toEqual([])
   for (const trigger of [blank, empty]) expect(h.runtime.store.replyStatus(key('decline', trigger.id))).toBe('sent')
@@ -373,7 +375,8 @@ it('says in the log when a listed bot keeps its own mention ignorable', async ()
   const trigger = feishu('19', '@bot 部署完成')
   h.runtime.receive(trigger); await h.runtime.idle()
   expect(await h.route({ kind: 'ignore', trigger_id: trigger.id, reason: 'A bot status.' })).toMatchObject({ decision: 'ignore' })
-  expect(warn).toHaveBeenCalledWith(expect.stringContaining('ignorable'), trigger.id, trigger.actor.id)
+  expect(warn).toHaveBeenCalledWith(expect.stringContaining('remove that entry from this Source\'s bots if the sender is a person'),
+    trigger.id, trigger.actor.id, trigger.source, 'Alice bot')
 })
 
 it('titles an accepted addressed message by its own first line without the mention, and keeps that line when only a mention is left', async () => {
@@ -475,6 +478,42 @@ it('finds a listed bot by any id its sender is known by, as the people list does
   h.runtime.store.triggers.save({ ...trigger, meta: { ...trigger.meta, actorIds: ['staff_1', 'cli_ci'] } })
   expect(await h.route({ kind: 'ignore', trigger_id: trigger.id, reason: 'Deployment notice.' })).toMatchObject({ decision: 'ignore' })
   expect(h.runtime.store.tickets.list()).toEqual([])
+})
+
+it('answers in the language of the message', async () => {
+  const chinese = feishu('30', '@bot 把副标题改成浏览网页'), english = feishu('32', '@bot shorten the subtitle')
+  for (const trigger of [chinese, english]) h.runtime.receive(trigger)
+  await h.runtime.idle()
+  for (const trigger of [chinese, english]) await h.route({ kind: 'ignore', trigger_id: trigger.id, reason: 'Copy change.' })
+  await h.runtime.idle()
+  expect(markdowns()).toContain('收到：把副标题改成浏览网页')
+  expect(markdowns()).toContain('Received: shorten the subtitle')
+})
+
+it('answers a message with no words in the language the conversation last used', async () => {
+  // A message with no text carries no language, so the newest person's message before it on the same Thread decides, and a
+  // Thread with no such history falls back to English.
+  h.runtime.store.triggers.save(feishu('34', '@bot 帮我看一下热搜轻参与的进度'))
+  const continued = feishu('35', '   ', { root_id: 'om_34' }), alone = feishu('36', '   ')
+  for (const trigger of [continued, alone]) h.runtime.receive(trigger)
+  await h.runtime.idle()
+  for (const trigger of [continued, alone]) await h.route({ kind: 'ignore', trigger_id: trigger.id, reason: 'No words.' })
+  await h.runtime.idle()
+  expect(h.runtime.store.replyStatus(key('decline', continued.id))).toBe('sent')
+  expect(markdowns()).toContain('这条消息只有 @ 提及，没有可执行的内容。')
+  expect(h.runtime.store.replyStatus(key('decline', alone.id))).toBe('sent')
+  expect(markdowns()).toContain('This message is only a mention, with nothing to act on.')
+})
+
+it('removes the mention that addressed the agent from the title, and keeps another person\'s mention', async () => {
+  // Only the address is the agent's mention. A mention later in the message names someone it is about, so dropping it would
+  // change what the request says.
+  const trigger = feishu('37', '@bot 看 @张三 的 PR 是不是合了')
+  h.runtime.receive(trigger); await h.runtime.idle()
+  const accepted = await h.route({ kind: 'ignore', trigger_id: trigger.id, reason: 'Ask about a PR.' })
+  expect(h.runtime.store.tickets.get((accepted.ticket as { ticket_id: string }).ticket_id)!.title).toBe('看 @张三 的 PR 是不是合了')
+  await h.runtime.idle()
+  expect(markdowns()).toContain('收到：看 @张三 的 PR 是不是合了')
 })
 
 it('cuts an over-long title without leaving half a surrogate pair', async () => {
