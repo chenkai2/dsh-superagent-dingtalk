@@ -25,7 +25,7 @@ Ownership continues while the Ticket is live, even if a person removes its Subsc
 
 The main Session receives a follow-up notice. While an Executor owns the message, the main Session may only stop work on the person's request; accept, attach, ignore and requeue are refused. A stop still passes through the gate with the follow-up strength described below.
 
-A person who says the ticket's project is wrong is asking for that stop and for what they said to be recorded. `orchestrator_ticket_project_correct` is that stop plus the record: it passes the same gate as a stop, appends what they named without rewriting the project the ticket ran in, and ends the ticket as `stopped` by a person. That outcome is what keeps it stopped, because an end by its Executor (`dropped`) leaves the ticket resumable by the next message, and a resumed ticket keeps the Session whose working directory is the project the person just rejected.
+A person who says the ticket's project is wrong is asking for that stop and for what they said to be recorded. `orchestrator_ticket_project_correct` is that stop plus the record: it passes the same gate as a stop, appends what they named without rewriting the project the ticket ran in, ends the ticket as `stopped` by a person, and teaches the project index that phrase as an alias, so the next request of that kind resolves to the project they named. That outcome is what keeps it stopped, because an end by its Executor (`dropped`) leaves the ticket resumable by the next message, and a resumed ticket keeps the Session whose working directory is the project the person just rejected.
 
 ### Handing back and releasing follow-ups
 

@@ -52,7 +52,7 @@ Worker subagents, including nested ones, use DeepSeek Harness's `standard` prese
 
 Before the first Assignment, a launch prepares the directory in one order: create the Project's worktree, run the prepare command, then verify the directory.
 
-A Ticket whose Project code resolved (`Ticket.project`) works in a worktree of that Project: `git -C <project.path> worktree add --detach <directory> <project HEAD>`. It is detached because a branch the Project's main copy has checked out cannot be checked out again, so a Ticket's work belongs on the `agent/<name>` branch its worker creates. A path that already is this Project's worktree is reused rather than created again, which both a retry and a prepare command that made it produce.
+A Ticket whose Project code resolved (`Ticket.project`) works in a worktree of that Project: `git -C <project.path> worktree add --detach <directory> <project HEAD>`. It is detached so the Ticket's work lands only on the `agent/<name>` branch its worker creates; a branch name would also fail whenever the Project's main copy holds it. A path that already is this Project's worktree is reused rather than created again, which both a retry and a prepare command that made it produce.
 
 Creating a worktree heals what an earlier attempt left at the path first: `git worktree prune` clears a registration whose directory is gone, the path is then removed if it exists (a valid worktree and its registration go together; a directory whose `.git` file is gone is no worktree that git can remove, so its files go and the registration is pruned again), and the worktree is added last. All three steps are idempotent, so a retry at the same path succeeds instead of colliding with its own registration.
 
@@ -62,7 +62,7 @@ Then the prepare command runs with `sh`, if one is configured, in the directory'
 
 A failed command fails the Ticket and records its output. A retry or a person's message on one of the Ticket's Threads tries preparation again. A pull request belongs to the Ticket when its branch's last path segment matches the Ticket's short name.
 
-The directory is verified on every launch, not only when it was created, because one that merely exists may be another Ticket's worktree. With a Project the check requires that the directory's work tree root is the directory itself and that its repository is the Project's; without one it requires that the directory exists and is no one else's worktree. A Ticket recorded before directories moved keeps the directory in its record and is checked this way; it is never migrated or recomputed.
+The directory is verified on every launch, not only when it was created, because one that merely exists may be another Ticket's worktree. With a Project the check requires that the directory's work tree root is the directory itself and that its repository is the Project's; without one it requires that the directory exists and is no one else's worktree. A Ticket recorded before directories moved keeps the directory in its record and is checked this way; it is never migrated or recomputed, and no project is resolved for it. Resolving one would build a worktree at that frozen path, outside `<stateDir>/worktrees`, where the cleanup never looks.
 
 ### Cleaning up a Ticket directory
 
@@ -72,7 +72,7 @@ A directory is kept while the Ticket is live, except for `failed` work: a person
 
 Its branches are never deleted, `agent/<name>` among them: it is the root of the Ticket's pull request.
 
-Cleanup runs at startup and every six hours, and a failure is logged and kept for the panel: it never changes a Ticket's outcome. The startup sweep also removes the registrations of the directories it deleted, and any registration under `<stateDir>/worktrees` that no open Ticket uses. A registration outside that root is the operator's checkout and is left alone.
+Cleanup runs at startup and every six hours, and a failure is logged and counted on the Executor instance: it never changes a Ticket's outcome. The startup sweep also removes the registrations of the directories it deleted, and any registration under `<stateDir>/worktrees` that no open Ticket uses. A registration outside that root is the operator's checkout and is left alone.
 
 ### The project index
 
