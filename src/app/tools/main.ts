@@ -86,17 +86,19 @@ function invalid(item: RouteItem): string | undefined {
 type Routed = { decision?: DecisionKind; reason: string; ticketId?: string | undefined; triggerIds?: readonly string[]; declined?: boolean
   /** Set when an `ignore` of an addressed message ran as an accept, so the caller sees the route decided it, not the model. */
   acceptedAddressed?: boolean }
+/** Why an addressed message could not become the accept it asked for; the Engine's own reason follows it. */
+const NOT_ACCEPTED = 'It addressed the agent, so it is a request, but no ticket was created'
 /**
  * The request's own words as an accepted ticket's title: its first line without the mentions that addressed the agent,
- * whitespace collapsed and cut to the `accept` title limit.
+ * whitespace collapsed and cut to the `accept` title limit. A first line that is nothing but a mention is kept whole, so an
+ * accepted request never holds an empty title.
  */
 function addressedTitle(text: string): string {
-  return (text.split('\n')[0] ?? '')
-    .replace(/<@[^>\n]*>/g, ' ')
-    .replace(/(?:^|\s)@[\p{L}\p{N}_.-]+/gu, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 200)
+  const first = text.split('\n')[0] ?? ''
+  const bare = first.replace(/<@[^>\n]*>/g, ' ').replace(/(?:^|\s)@[\p{L}\p{N}_.-]+/gu, ' ').replace(/\s+/g, ' ').trim()
+  const raw = first.replace(/\s+/g, ' ').trim()
+  // The limit counts UTF-16 code units, so a cut inside a surrogate pair would leave the title with half a glyph.
+  return (bare || raw).slice(0, 200).replace(/[\uD800-\uDBFF]$/, '')
 }
 /**
  * Carry out one routing decision as its Engine command, in a transaction of its own. `decided` holds the Triggers that this
@@ -133,20 +135,29 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
       // A person who mentioned the agent asked for something, so the code never lets an ignore drop it: it runs the accept the
       // trigger already supplies a title and acknowledgement for. Model guidance alone cannot hold this rule, because whether
       // a message matches a rule is a judgment about the rules, while whether a person asked is a fact about the message.
+      // `addressed` alone is not that fact: a bot's mention is an inferred candidate the rules decide, so it stays ignorable.
       const trigger = host.store.triggers.get(item.trigger_id)
-      if (trigger?.addressed) {
+      if (trigger?.human && trigger.addressed) {
         const title = addressedTitle(trigger.text)
+        // The request's language, not the title's: a title that is only a mention carries no words of its own.
+        const acknowledgement = isChinese(trigger.text) ? `收到：${title}` : `Received: ${title}`
+        const before = host.store.triggers.disposition(item.trigger_id)?.decisionId
         try {
           const decision = host.engine.decide(item.trigger_id, { kind: 'accept', title, scope: title, reason: { code: 'explicitRouted' },
-            acknowledgement: isChinese(title) ? '收到，我来处理。' : 'Received; working on it.',
-            name: `work-${createHash('sha1').update(item.trigger_id).digest('hex').slice(0, 6)}` })
+            acknowledgement,
+            name: `work-${createHash('sha1').update(item.trigger_id).digest('hex').slice(0, 6)}`,
+            // Recorded on the Decision, so the fallback stays visible after the tool result is gone.
+            audit: { acceptedAddressed: true } })
           // A Decision that created no ticket cannot answer the request; nothing else can either, so say so.
-          if (decision.kind !== 'accept' || !decision.ticketId) {
-            return { refused: `It addressed the agent, so it is a request, but no ticket was created: ${reasonText(decision.reason)}` }
+          if (decision.kind !== 'accept' || !decision.ticketId) return { refused: `${NOT_ACCEPTED}: ${reasonText(decision.reason)}` }
+          // A Decision that existed before keeps its title and acknowledgement, as any replayed accept does.
+          if (decision.id === before) {
+            return { decision: 'accept', reason: `Already accepted as ${decision.ticketId}; title and acknowledgement unchanged`,
+              ticketId: decision.ticketId, acceptedAddressed: true }
           }
           return { ...fromDecision(decision), acceptedAddressed: true, triggerIds: decision.triggerIds }
         } catch (error) {
-          if (error instanceof UserError) return { refused: `It addressed the agent, so it is a request, but no ticket was created: ${error.message}` }
+          if (error instanceof UserError) return { refused: `${NOT_ACCEPTED}: ${error.message}` }
           throw error
         }
       }
@@ -168,7 +179,7 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
 function routeTool(host: MainToolsHost): Tool {
   return tool({
     name: 'orchestrator_route',
-    description: 'Route candidates, one item each by the card\'s trigger_id, in one call: accept an explicit request as a new ticket, attach a trigger to an existing ticket, stop a ticket on a person\'s stop message, or ignore a candidate that needs no ticket or stop, as dispatch says. A message that addressed the agent is a request this installation was asked to carry out: accept it, or attach it to the ticket it belongs to, even when no rule mentions what it asks for and even when the answer is short. Ignore only a message that did not address the agent, because the rules decide those: an ignore of an addressed message is carried out as an accept, and its result says acceptedAddressed. Items run in order and each is answered on its own; a refused item leaves the others. An inferred candidate may be ignored here; accepting one goes through orchestrator_eval_decide.',
+    description: 'Route candidates, one item each by the card\'s trigger_id, in one call: accept an explicit request as a new ticket, attach a trigger to an existing ticket, stop a ticket on a person\'s stop message, or ignore a candidate that needs no ticket or stop, as dispatch says. A message that addressed the agent is a request this installation was asked to carry out: accept it, or attach it to the ticket it belongs to, even when no rule mentions what it asks for and even when the answer is short. Ignore only a message that did not address the agent, because the rules decide those: an ignore of an addressed message from a person is carried out as an accept, and its result says acceptedAddressed. Items run in order and each is answered on its own; a refused item leaves the others. An inferred candidate may be ignored here; accepting one goes through orchestrator_eval_decide.',
     schema: z.object({ decisions: z.array(RouteItemSchema).min(1).max(20) }).strict(),
     execute: async ({ decisions }) => {
       const decided = new Map<string, string>()

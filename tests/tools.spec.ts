@@ -270,14 +270,17 @@ it('accepts a message that addressed the agent even when routing chose ignore, a
   expect(ticket.title).toBe('帮我看一下热搜轻参与这个会话的进度')
   expect(ticket.execution!.name).toMatch(/^work-[0-9a-f]{6}/)
   expect(ticket.mandate).toMatchObject({ strength: 'explicit', basis: { addressed: 'mention' } })
+  // The recorded Decision says the accept came from this fallback, not from the model's own choice.
+  expect(h.runtime.store.decisions.get(ticket.decisionId)!.audit).toEqual({ acceptedAddressed: true })
   await h.runtime.idle()
   expect(h.runtime.store.replyStatus(key('ack', chinese.id))).toBe('sent')
-  expect(markdowns()).toContain('收到，我来处理。')
-  // Ignoring it again finds the ticket the first call created, as any replayed accept does.
+  // The acknowledgement names the request, so the person reads what was taken on rather than a generic promise.
+  expect(markdowns()).toContain('收到：帮我看一下热搜轻参与这个会话的进度')
+  // Ignoring it again finds the ticket the first call created, as any replayed accept does, and says how it differs.
   expect(await h.route({ kind: 'ignore', trigger_id: chinese.id, reason: 'again' })).toMatchObject({ decision: 'accept', acceptedAddressed: true,
-    ticket: { ticket_id: ticket.id } })
+    reason: `Already accepted as ${ticket.id}; title and acknowledgement unchanged`, ticket: { ticket_id: ticket.id } })
   expect(await h.route({ kind: 'ignore', trigger_id: english.id, reason: 'Not needed.' })).toMatchObject({ decision: 'accept', acceptedAddressed: true })
-  expect(markdowns()).toContain('Received; working on it.')
+  expect(markdowns()).toContain('Received: check the cache warmth for me')
   // A model-chosen accept marks nothing: the route decided it, not this fallback.
   const chosen = feishu('9', '@bot 再加一个按钮')
   h.runtime.receive(chosen); await h.runtime.idle()
@@ -294,6 +297,38 @@ it('refuses an addressed message it cannot turn into a ticket, saying the messag
     { decisions: [{ kind: 'ignore', trigger_id: gone.id, reason: 'Not needed.' }] }) as { results: Record<string, unknown>[] }
   expect(results[0]).toEqual({ trigger_id: gone.id, kind: 'ignore',
     refused: 'It addressed the agent, so it is a request, but no ticket was created: Trigger is not admissible: not_a_member' })
+})
+
+it('still ignores a message a bot addressed to the agent, because only a person asks', async () => {
+  // `addressed` is orthogonal to `human`: a listed bot's mention is an inferred candidate the rules decide, so it must stay
+  // ignorable. Only a person's mention states a request that an ignore may not drop.
+  const seeded = h.runtime.store.settings()
+  h.runtime.store.saveSettings({ ...seeded,
+    sources: { ...seeded.sources, feishu: { enabled: true, config: { ...seeded.sources.feishu!.config, otherChats: 'mentions' } } },
+    policy: { ...seeded.policy, sources: { ...seeded.policy.sources, feishu: { ...seeded.policy.sources.feishu!, bots: [{ id: 'cli_ci', name: 'CI' }] } } } })
+  const bot = feishu('5', '@bot 部署完成', { sender_type: 'bot', sender_id: 'cli_ci' })
+  h.runtime.receive(bot); await h.runtime.idle()
+  expect(await h.route({ kind: 'ignore', trigger_id: bot.id, reason: 'CI status.' })).toMatchObject({ decision: 'ignore',
+    reason: 'Ignored from its card, without a rule assessment; CI status.' })
+  expect(h.runtime.store.tickets.list()).toEqual([])
+})
+
+it('titles an accepted addressed message by its own first line without the mention, and keeps that line when only a mention is left', async () => {
+  const cases: [id: string, text: string, title: string][] = [
+    // A mention markup the Source may hand over, and the rest of the message never joins the title.
+    ['10', '<@ou_bot> 把副标题改成“浏览网页”\n第二行不进入标题', '把副标题改成“浏览网页”'],
+    // An address inside a word is part of the message, not a mention.
+    ['11', '@bot 发邮件给 a@b.com 说明一下', '发邮件给 a@b.com 说明一下'],
+    // A message that is only a mention keeps its raw first line, so the ticket never holds an empty title.
+    ['12', '@bot', '@bot'],
+    ['13', '<@ou_member>', '<@ou_member>'],
+  ]
+  for (const [id, text, title] of cases) {
+    const trigger = feishu(id, text)
+    h.runtime.receive(trigger); await h.runtime.idle()
+    const result = await h.route({ kind: 'ignore', trigger_id: trigger.id, reason: 'Mention only.' })
+    expect(h.runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!.title, text).toBe(title)
+  }
 })
 
 it('returns where a reply stands: sent, or dropped when its conversation can no longer receive it', async () => {
