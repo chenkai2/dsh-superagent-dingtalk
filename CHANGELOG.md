@@ -3,6 +3,23 @@
 All notable changes to `@chenkai114/dsh-superagent-dingtalk`. This project publishes from a GitHub Release,
 so a version here without a link is one whose release was superseded before publishing.
 
+## 0.0.39 — 2026-11-27
+
+### Changed
+
+- **工单在项目里开会话，写代码落在该项目的 `.worktrees/`**：会话 cwd 是项目根（只读，能看全仓、能跑只读命令），
+  改动必须在 `<project>/.worktrees/<工单名>` 里做，分支也在那里建。无项目的工单仍用 `<stateDir>/worktrees/`。
+  `.worktrees/` 自动写进该仓库的 `.git/info/exclude`（本地生效、不提交），项目的 `git status` 保持干净。
+- 隔离从**路径保证**降级为**指令 + 事后检测**：工单报 ready 时若项目主目录 `git status` 非空，工单记 `failed`
+  并说明改动路径。这是「会话要在项目里」这一体验的代价，已在文档写明。
+
+### Fixed
+
+- **代码兜底建单的工单没有项目**：模型选 ignore 时由 `decideAddressed` 构造 accept，此前只补了标题与回执，
+  没解析项目——于是最需要隔离的那类工单恰好没有项目。现在同样走 `resolveProject`，纯项目名也能命中。
+- **Session 指向已被清理的目录**：launch 与 resume 都会先确保目录存在（无项目 `mkdir -p`，有项目走自愈重建），
+  不再出现「working directory 不存在」。
+
 ## 0.0.38 — 2026-11-27
 
 ### Fixed
