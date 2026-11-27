@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { UserError, followupOwners, key, reasonText, type Decision, type DecisionKind, type EngineForMainSession, type EngineForPeople,
   type Trigger } from '../../core/index.ts'
 import { IM_WORDS, NOTE_WORDS, isChinese, wordCount } from '../../infra/text.ts'
-import { listedBot } from '../../policy.ts'
+import { actorAliases, listedBot } from '../../policy.ts'
 import { AssessmentSchema, EvalReadSchema, WorktreeNameSchema, type MasterAssessor } from '../assessment.ts'
 import { ticketCard } from '../cards.ts'
 import { PromptConfigSchema, savePrompts, type Prompts } from '../prompts.ts'
@@ -172,7 +172,8 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
       // `addressed` alone is not that fact: a bot's mention is an inferred candidate the rules decide, so it stays ignorable,
       // and a sender the Source lists as a bot is one whatever the Source reports about `human` (docs/007, docs/008).
       const trigger = host.store.triggers.get(item.trigger_id)
-      const bot = trigger?.human && trigger.addressed ? listedBot(host.store.settings(), trigger.actor) : undefined
+      const bot = trigger?.human && trigger.addressed
+        ? listedBot(host.store.settings(), trigger.actor, actorAliases(trigger.meta)) : undefined
       // The bots list is an operator's declaration, so a person's id typed there would make that person's requests silently
       // ignorable and nothing else about the message would reveal it: the skip says so.
       if (trigger && bot) host.context.logger.warn('dsh-superagent keeps trigger %s from %s ignorable: the Source lists that sender as a bot',

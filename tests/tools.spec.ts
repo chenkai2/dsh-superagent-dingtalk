@@ -434,6 +434,49 @@ it('quotes past a segmentation dip, where a longer text counts fewer words', asy
   expect(quoted(acknowledgement)).toBe(quotable(title))
 })
 
+it('keeps an acknowledgement that lands exactly on the word limit whole', async () => {
+  // `我们` counts one word per two glyphs, so 99 of them fill the limit exactly with the prefix. The early return must keep
+  // the whole title: moving its `<=` to `<` would cut this acknowledgement and append an ellipsis although nothing is over.
+  const title = '我们'.repeat(99)
+  const trigger = feishu('26', `@bot ${title}`)
+  h.runtime.receive(trigger); await h.runtime.idle()
+  const accepted = await h.route({ kind: 'ignore', trigger_id: trigger.id, reason: 'A long title.' })
+  expect(h.runtime.store.tickets.get((accepted.ticket as { ticket_id: string }).ticket_id)!.title).toBe(title)
+  await h.runtime.idle()
+  const acknowledgement = markdowns().find(text => text.startsWith('收到：')) ?? ''
+  expect(acknowledgement).toBe(`收到：${title}`)
+  expect(wordCount(acknowledgement)).toBe(IM_WORDS)
+  // The property behind the limit: one more glyph would exceed it.
+  expect(wordCount(`收到：${title}我`)).toBeGreaterThan(IM_WORDS)
+})
+
+it('ignores a message a Source reports as a person when the Source lists it as a bot, at inferred admission', async () => {
+  // The DingTalk Stream callback reports every sender as a person, so an operator declares a robot in `bots` instead. Where
+  // the chat admits unlisted addressed senders as inferred candidates, the fallback leaves that message to the rules; without
+  // the `bots` check it would accept, and that accept would be refused as not explicit.
+  const seeded = h.runtime.store.settings()
+  h.runtime.store.saveSettings({ ...seeded,
+    sources: { ...seeded.sources, feishu: { enabled: true, config: { ...seeded.sources.feishu!.config, chats: [{ chatId: CHAT, listen: 'mentions' }] } } },
+    policy: { ...seeded.policy, sources: { ...seeded.policy.sources, feishu: { ...seeded.policy.sources.feishu!,
+      bots: [{ id: 'cli_ci', name: 'CI' }], admission: { [CHAT]: { unlistedAddressed: 'inferred' } } } } } })
+  const robot = feishu('24', '@bot 部署完成', { sender_id: 'cli_ci' })
+  h.runtime.receive(robot); await h.runtime.idle()
+  expect(await h.route({ kind: 'ignore', trigger_id: robot.id, reason: 'Deployment notice.' })).toMatchObject({ decision: 'ignore' })
+  expect(h.runtime.store.tickets.list()).toEqual([])
+})
+
+it('finds a listed bot by any id its sender is known by, as the people list does', async () => {
+  // A bot row accepts any id without spaces, so an operator may type one the transport reports only among the aliases. Read by
+  // `actor.id` alone the guard misses it, accepts the message, and the configuration silently does nothing.
+  const seeded = h.runtime.store.settings()
+  h.runtime.store.saveSettings({ ...seeded, policy: { ...seeded.policy, sources: { ...seeded.policy.sources,
+    feishu: { ...seeded.policy.sources.feishu!, allowed: [{ id: 'staff_1', name: 'Ops' }], bots: [{ id: 'cli_ci', name: 'CI' }] } } } })
+  const trigger = feishu('25', '@bot 部署完成', { sender_id: 'staff_1' })
+  h.runtime.store.triggers.save({ ...trigger, meta: { ...trigger.meta, actorIds: ['staff_1', 'cli_ci'] } })
+  expect(await h.route({ kind: 'ignore', trigger_id: trigger.id, reason: 'Deployment notice.' })).toMatchObject({ decision: 'ignore' })
+  expect(h.runtime.store.tickets.list()).toEqual([])
+})
+
 it('cuts an over-long title without leaving half a surrogate pair', async () => {
   // The emoji starts at code unit 199, so a plain 200-unit cut would keep only its high surrogate and render as U+FFFD.
   const trigger = feishu('16', `@bot ${'a'.repeat(199)}😀 tail`)
