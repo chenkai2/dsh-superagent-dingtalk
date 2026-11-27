@@ -2,7 +2,7 @@
 import { key } from './ids.ts'
 import { UserError } from './errors.ts'
 import { latestAssignment, latestReport, liveTicket, ticketOutcome } from './model.ts'
-import type { ChannelRef, Ticket, Trigger } from './model.ts'
+import type { ChannelRef, ProjectCorrection, Ticket, Trigger } from './model.ts'
 import type { ReplyStatus } from './ports.ts'
 import { EnginePart } from './part.ts'
 
@@ -42,6 +42,21 @@ const clip = (line: string, max: number): string => {
   return reached.length > max ? `${reached.slice(0, max - 1).join('').trimEnd()}…` : line
 }
 /**
+ * The line a project correction adds to the conversation, in the language of the message that corrected it: the project it
+ * ran in was wrong, what was recorded instead, that this run stopped, and that sending the request again continues there.
+ * It does not use `droppedNotice`, whose copy promises no change was made: a corrected ticket often left files or a pull
+ * request behind in the project it ran in.
+ */
+export function correctedNotice(request: string, project: string): string {
+  // A Channel allows an IM message 100 words, and a person's phrase can be as long as their message. Chinese can approach one
+  // word per glyph, and the sentence around the name costs about 30, so the name is clipped to 24 glyphs: a longer one would
+  // fail every delivery attempt and leave the person without the only message that says what was recorded.
+  const named = clip(project, 24)
+  return chinese(request)
+    ? `项目判定有误：已按 ${named} 记录。本次已停止。要接着做请再发一次，之后会直接用 ${named}。`
+    : `The project was wrong: recorded as ${named}. This run is stopped. Send the request again to continue; it will use ${named}.`
+}
+/**
  * The line a `dropped` end adds to the conversation, in the language of the request that started the ticket. A worker that
  * reports nothing left to do sends no message itself, so this line is the only word the person who asked gets; the report's
  * summary follows, first line only, because the record keeps the rest.
@@ -59,8 +74,9 @@ function droppedNotice(request: string, summary: string): string {
 
 /**
  * Replies writes the Engine's messages to Channels through the Outbox port: an acknowledgement, the answer to a person's
- * question, a ticket's result, its question for a person, the news that an Assignment was interrupted, and the end notice a
- * `dropped` report owes, each only when its rule allows it, under a deterministic id that keeps it from going out twice
+ * question, a ticket's result, its question for a person, the news that an Assignment was interrupted, the end notice a
+ * `dropped` report owes, and the notice a corrected project owes, each only when its rule allows it, under a deterministic id
+ * that keeps it from going out twice
  * (idempotent). The Engine routes `reply` here; Tickets asks it for the acknowledgement an accept carries, and Assignments
  * asks it to withdraw a question a report replaced, to ask again the question a restart left open, and to say that a
  * ticket ended dropped.
@@ -137,6 +153,21 @@ export class Replies extends EnginePart {
     const existing = this.options.outbox.status(id)
     this.options.outbox.send({ id, channel: trigger.channel, text: request.text, kind: 'reply', purpose: 'decline' })
     return { id, status: this.options.outbox.status(id) ?? 'pending', reused: existing !== undefined }
+  }
+  /**
+   * Queue the notice that a person said the ticket's project is wrong, in the conversation the ticket started in: what was
+   * recorded instead, that the run stopped, and that sending the request again continues in the project they named. The
+   * engine sends it because nobody else speaks for a stop: the main Session may only stop work here, and the worker whose
+   * project was rejected is the last voice the person should hear from. Its id belongs to the ticket and the message that
+   * corrected it, so replaying that message says this once. A ticket with no Channel to write to keeps the recorded
+   * correction alone, as an unannounced end does.
+   */
+  announceProjectCorrected(ticket: Ticket, correction: ProjectCorrection, request: string): void {
+    const channel = this.sourceChannel(ticket)
+    if (!channel) return
+    const id = key('project-corrected-notice', ticket.id, correction.triggerId)
+    if (this.options.outbox.status(id) !== undefined) return
+    this.options.outbox.send({ id, channel, kind: 'notice', ticketId: ticket.id, text: correctedNotice(request, correction.to) })
   }
   /**
    * Queue the acknowledgement an accept carries where the message that started the ticket was written, if it has a Channel

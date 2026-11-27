@@ -28,7 +28,12 @@ export function feishu(id: string, text: string, overrides: Record<string, unkno
     mentions: [{ id: 'ou_bot' }], ...overrides }, 'ou_bot', 'cli_bot')!
 }
 
-type RegisteredTool = { name: string; execute: (args: unknown, execution: { signal: AbortSignal }) => Promise<unknown> }
+/**
+ * A tool as the host registers it: `parameters` is the JSON schema the model's arguments are validated against before
+ * `execute` runs, which is how a test reads the bounds a model meets.
+ */
+type RegisteredTool = { name: string; parameters: Record<string, unknown>
+  execute: (args: unknown, execution: { signal: AbortSignal }) => Promise<unknown> }
 type FakeAgent = {
   id: string; status: string; inbox: { nextTurn: UserMessage[]; nextStep: UserMessage[] }
   cancel: Mock; inject: Mock<(message: UserMessage) => void>; steer: Mock<(message: UserMessage) => void>; followup: Mock<(message: UserMessage) => void>

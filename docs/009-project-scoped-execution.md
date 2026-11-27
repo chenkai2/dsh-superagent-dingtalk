@@ -179,14 +179,15 @@ DSH_SUPERAGENT_PROJECT_PATH  项目绝对路径（无项目为空串）
 3. **引擎自己发一条 IM**（不能指望主 Session 说话）：新增一个专门的 notice（不复用 `droppedNotice`，那条写死「没有做任何改动」，而纠正场景往往已经改过文件或开了 PR）。文案：项目判定有误、已按 `<B>` 记录、本次已停止、要接着做请再发一次（现在会直接用 B）。
 4. **记录**（三处，各司其职）：
    - `ticket.project` **不覆盖**——它是「这张工单实际在哪个项目里干过活」，改成 B 会让记录说谎，并与「PR 归属认 `agent/<name>` 分支在 A 仓」互相打架。
-   - `ticket.projectCorrections: Array<{ from, to, by: { staffId }, triggerId, at }>`（**append-only**）：`triggerId` 用于幂等，`by` 记人（不是 trigger id）。同一别名出现 ≥2 个不同来源时标 `ambiguous` 并让判定**留空**，而不是静默取最后一条。
-   - **别名表**（长期学习）：**权威源在 SQLite**，不直接写 JSON。理由：工单结束与纠正发生在 `store.atomic` 事务里，文件写在事务外，两步之间崩溃就会出现「工单已纠正、别名没记住」。落库用 `key('project-corrected', ticketId, triggerId)` 做幂等键（O(1)，不用扫全表），再**单向导出**成 `<stateDir>/projects-learned.json` 供 review、diff、回滚。
-     人工维护的 `projects-aliases.json` 仍然是**输入**（只读），与导出的 learned 文件**分开**；两者在同一 key 上冲突时：人工优先，且该 key 标 `ambiguous`、判定留空（与 §3 一致），仲裁交给人改文件。
+   - `ticket.projectCorrections: Array<{ from, to, by: ActorRef, triggerId, at }>`（**append-only**）：`triggerId` 用于幂等，`by` 记说这句话的人（`{ source, id }`，不是 trigger id）。两个**人**把同一别名纠正到不同项目时，**以最后一条为准**，旧值留在 `sources` 里供追查（已定，见文末）。
+   - **别名表**（长期学习）：**唯一权威源在 SQLite，不写任何 JSON 文件**。理由：工单结束与纠正发生在 `store.atomic` 事务里，文件写在事务外，两步之间崩溃就会出现「工单已纠正、别名没记住」；多写一份文件就是多一个会不一致的权威源。落库用 `key('project-corrected', ticketId, triggerId)` 做幂等键（O(1)，不用扫全表），别名表本身存一行 `project-learned`，由 `readLearnedProjects()` 单向读出给索引层消费（`src/kv.ts` 的 `KV.projects`）。
+     人工维护的 `projects-aliases.json` 仍然是**输入**（只读），与库里的 learned 记录**分开**；两者在同一 key 上冲突时：人工优先，且该 key 标 `ambiguous`、判定留空（与 §3 一致），仲裁交给人改文件——这是唯一保留 `ambiguous` 的情形，因为改写它等于用一个模型抽取的说法覆盖人手写的配置。别名键统一按小写存（同一个说法不因大小写变成两条）；大小写不同不算冲突，保留最先写下的拼写。
      ```json
-     { "趋势互动": { "project": "portal.example.com", "source": "human-correction",
-                     "by": "<staffId>", "ticket": "<ticket id>", "triggerId": "<trigger id>", "at": "…",
-                     "evidence": "人原话" } }
+     { "趋势互动": { "alias": "趋势互动", "project": "portal.example.com", "source": "human-correction",
+                     "sources": [{ "project": "portal.example.com", "by": { "source": "feishu", "id": "<actor id>" },
+                                   "ticket": "<ticket id>", "triggerId": "<trigger id>", "at": "…", "evidence": "人原话" }] } }
      ```
+     `sources` 全留（append-only）。与人手写配置冲突时，条目带 `prior: { project, source: 'hand-maintained' }` 并标 `ambiguous`、摘掉 `project`；只是两个人先后给了不同项目时，`project` 换成最后一条、`sources` 保留两条。
 5. **键的可信度**：别名键（人说的那句）由模型抽取，但必须**是 trigger 原文的子串**（代码可校验，与 §3 的 `named` 用同一判据），否则拒收。这样「不接受模型自述」这条才真正成立。
 
 不做的事：
@@ -229,7 +230,7 @@ v1 曾把「目录根迁出工作根」单独作为第 2 步：评审实测后�
 7. **绑定**：assignment 与 worker prompt 都含 `git switch -c agent/$DSH_SUPERAGENT_NAME`。
 8. **迁移**：无 `project` 的旧工单仍能 launch（目录在新根下创建）；已有目录的旧工单不受影响（路径冻结在记录里）。
 9. **清理**：无 open PR 的工单结束后工作树与其 `.git/worktrees` 注册一起消失；有 open PR 的保留。
-10. **纠正记录**（§7.1）：纠正以 `stopped`/`by:human` 结束，**下一条人话不会把它 resume 回旧工作树**（这是本次复评的一号 bug）；`project` 不被覆盖、`projectCorrections` 追加；同一 trigger 只记一次；两人纠正不同项目进面板待裁决；机器人消息不能触发；别名写入 `projects-learned.json` 且键必须是原文子串；已结束工单只写别名；纠正后那条 IM 真的发出（引擎发，不靠主会话）。
+10. **纠正记录**（§7.1）：纠正以 `stopped`/`by:human` 结束，**下一条人话不会把它 resume 回旧工作树**（这是本次复评的一号 bug）；`project` 不被覆盖、`projectCorrections` 追加；同一 trigger 只记一次；两人纠正不同项目时别名标 `ambiguous`、判定留空（面板裁决另行排期）；机器人消息不能触发；别名写进 SQLite（`project-learned` + `key('project-corrected', …)`），**不产生任何文件**，且键必须是原文子串、`to` 不得等于当前记录的项目；已结束工单只写别名；纠正后那条 IM 真的发出（引擎发，不靠主会话），且项目名超长时仍在 IM 词数上限内。
 
 ## 待定
 
@@ -239,8 +240,8 @@ v1 曾把「目录根迁出工作根」单独作为第 2 步：评审实测后�
 
 已定（复评后收敛）：
 
-- **别名分两个文件**：人工 `projects-aliases.json`、机器 `projects-learned.json`（原子写、schema 校验、逐条 skipped）。
-- **`projectCorrection` 是 append-only 数组**，`project` 不可变；同一别名被两人纠正到不同项目时**以最后一条为准**，旧值留在 `sources` 里供追查。
+- **别名只有一个权威源**：机器学到的一律进 SQLite（`project-learned` + `key('project-corrected', …)`，与工单同事务），**不导出 JSON 文件**；人工维护的 `projects-aliases.json` 仍只作输入。
+- **`projectCorrection` 是 append-only 数组**，`project` 不可变；同一别名被两人纠正到不同项目时**以最后一条为准**，旧值留在 `sources` 里供追查；与人工文件里的说法冲突时才留空待裁决。
 - **纠正用 `stopped`/`by:human`**，不新增 outcome；引擎自己发那条 IM。
 - **工具命名**：`orchestrator_ticket_project_correct`（仓里工具一律 `orchestrator_*`）。
 - **project 字段的唯一解析点**：新增 resolver 于 `src/app/projects.ts`，`orchestrator_route` 与 `orchestrator_eval_decide` 两条 accept 路径都调它，`basis` 只在 resolver 里算一次（`AssessmentSchema`／`RouteItemSchema` 都是 `.strict()`，新字段要同时改 `FIELDS` 表、`ports.ts` 的 accept 变体、`policy.ts` 的映射、`runtime.ts` 的 `prepareTicket`）。
