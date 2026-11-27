@@ -24,7 +24,7 @@ async function later(text: string) {
   await h!.runtime.idle()
 }
 /** The project index's own record, which a correction must not rewrite. */
-const seedProject = (ticketId: string, name: string) => h!.runtime.store.atomic(() => {
+const seedProject = (ticketId: string, name = 'portal.example.com') => h!.runtime.store.atomic(() => {
   const seeded = { ...stored(ticketId), project: { name, path: `/work/${name}`, commonDir: `/work/${name}/.git`, basis: 'named' as const } }
   h!.runtime.store.tickets.save(seeded)
 })
@@ -35,6 +35,7 @@ it('stops the work as a person\'s stop, so the next message does not resume it',
   const message = followup('2', '这不是 portal.example.com，是 shop.example.com')
   h.runtime.receive(message); await h.runtime.idle()
   const candidates = h.candidates()
+  seedProject(ticket.id)
   await correct(ticket.id, 'shop.example.com', message.id)
   // Ending the ticket hands no message back as a fresh request, which would reopen the same work the person rejected.
   expect(h.candidates()).toEqual(candidates)
@@ -94,9 +95,11 @@ it('teaches one alias whatever case the phrase is written in', async () => {
     return message
   }
   const first = await h.acceptedTicket(feishu('1', '@bot 修一下 portal.example.com 的按钮'))
+  seedProject(first.ticket.id)
   await correct(first.ticket.id, 'TAP', (await said('2', 'TAP', 'om_1')).id)
   // A resolver matches text regardless of case, so a second person writing it another way must not become a second alias.
   const second = await h.acceptedTicket(feishu('3', '@bot 再修一下 portal.example.com 的按钮'))
+  seedProject(second.ticket.id)
   await correct(second.ticket.id, 'tap', (await said('4', 'tap', 'om_3')).id)
 
   const learned = h.runtime.store.get(KV.projects.learned) as Record<string, LearnedProjectAlias>
@@ -112,6 +115,7 @@ it('records one correction, one learned alias and one notice per message', async
   const { ticket } = await h.acceptedTicket(feishu('1', '@bot 修一下 portal.example.com 的按钮'))
   const message = followup('2', '这不是 portal.example.com，是 shop.example.com')
   h.runtime.receive(message); await h.runtime.idle()
+  seedProject(ticket.id)
   await correct(ticket.id, 'shop.example.com', message.id)
   const first = stored(ticket.id).ended
   // Replaying the same person's message changes nothing: the record is append-only and the notice goes out once.
@@ -127,6 +131,7 @@ it('reads the recorded correction back when the same message is replayed after i
   const { ticket } = await h.acceptedTicket(feishu('1', '@bot 修一下 portal.example.com 的按钮'))
   const message = followup('2', '这不是 portal.example.com，是 shop.example.com')
   h.runtime.receive(message); await h.runtime.idle()
+  seedProject(ticket.id)
   await correct(ticket.id, 'shop.example.com', message.id)
   const recorded = stored(ticket.id).projectCorrections!
   // The person who said it is no longer admitted, which is what a replay of an old message meets the day after.
@@ -149,6 +154,7 @@ it('keeps a name as long as a sentence inside the channel limit, so the person s
     const name = '长'.repeat(glyphs)
     const message = followup('2', `这不是 portal.example.com，是 ${name}`)
     h.runtime.receive(message); await h.runtime.idle()
+    seedProject(ticket.id)
     expect(await correct(ticket.id, name, message.id)).toMatchObject({ corrected: true, stopped: true })
 
     const notice = h.runtime.store.receipts.get(key('project-corrected-notice', ticket.id, message.id))!
@@ -167,6 +173,24 @@ it('keeps a name as long as a sentence inside the channel limit, so the person s
   await expect(correct(ticket.id, tooLong, message.id)).rejects.toThrow('<=60')
   expect(stored(ticket.id)).not.toHaveProperty('projectCorrections')
   expect(h.runtime.store.get(KV.projects.learned)).toBeUndefined()
+})
+
+it('keeps the copy of the name in the notice close to the record, and says where it was cut', async () => {
+  h = await startRuntime()
+  const { ticket } = await h.acceptedTicket(feishu('1', '@bot 修一下 portal.example.com 的按钮'))
+  const name = '长'.repeat(60)
+  const message = followup('2', `这不是 portal.example.com，是 ${name}`)
+  h.runtime.receive(message); await h.runtime.idle()
+  seedProject(ticket.id)
+  await correct(ticket.id, name, message.id)
+
+  // The record holds the whole name; the notice carries 32 glyphs and an ellipsis, so the two never look like different names.
+  expect(stored(ticket.id).projectCorrections![0]!.to).toBe(name)
+  const notice = h.runtime.store.receipts.get(key('project-corrected-notice', ticket.id, message.id))!
+  expect(notice.text).toContain(`${'长'.repeat(31)}…`)
+  expect(wordCount(notice.text)).toBeLessThanOrEqual(IM_WORDS)
+  await h.runtime.sendReplies()
+  expect(h.runtime.outbox.status(notice.id)).toBe('sent')
 })
 
 it('bounds the name a model may offer, before it reaches the record', async () => {
@@ -207,6 +231,7 @@ it('learns the alias in the database, and leaves no file behind to fall out of s
   const { ticket } = await h.acceptedTicket(feishu('1', '@bot 修一下 portal.example.com 的按钮'))
   const message = followup('2', '这不是 portal.example.com，是 shop.example.com')
   h.runtime.receive(message); await h.runtime.idle()
+  seedProject(ticket.id)
   await correct(ticket.id, 'shop.example.com', message.id)
 
   // The record a replay of this message meets, and the alias the project index reads back.
@@ -227,6 +252,7 @@ it('leaves an ended ticket\'s record alone and still learns the alias', async ()
   const ended = rowOf(ticket.id).ended
   const message = followup('2', '这不是 portal.example.com，是 shop.example.com')
   h.runtime.receive(message); await h.runtime.idle()
+  seedProject(ticket.id)
 
   expect(await correct(ticket.id, 'shop.example.com', message.id)).toMatchObject({ corrected: false, stopped: false })
   // A ticket that already ended keeps its end and its corrections: only the long-term alias is learnt.
@@ -270,6 +296,7 @@ it('tells the main Session to settle an alias people disagreed about, and still 
     'shop.example.com': { alias: 'shop.example.com', project: 'portal.example.com', source: 'hand-maintained', sources: [] } }))
   const message = followup('2', '这不是 portal.example.com，是 shop.example.com')
   h.runtime.receive(message); await h.runtime.idle()
+  seedProject(ticket.id)
   const result = await correct(ticket.id, 'shop.example.com', message.id) as { learned: { ambiguous: boolean; project?: string }; note: string }
 
   expect(result.learned).toEqual({ alias: 'shop.example.com', ambiguous: true })
@@ -282,6 +309,7 @@ it('tells the person in the language of the message that corrected it', async ()
   const { ticket } = await h.acceptedTicket(feishu('1', '@bot 修一下 portal.example.com 的按钮'))
   const message = followup('2', 'wrong repo: it is shop.example.com, not portal.example.com')
   h.runtime.receive(message); await h.runtime.idle()
+  seedProject(ticket.id)
   await correct(ticket.id, 'shop.example.com', message.id)
 
   const notice = h.runtime.store.receipts.get(key('project-corrected-notice', ticket.id, message.id))!
@@ -294,6 +322,7 @@ it('says in Chinese what it did, in the conversation the ticket started in', asy
   const { ticket } = await h.acceptedTicket(feishu('1', '@bot 修一下 portal.example.com 的按钮'))
   const message = followup('2', '这不是 portal.example.com，是 shop.example.com')
   h.runtime.receive(message); await h.runtime.idle()
+  seedProject(ticket.id)
   await correct(ticket.id, 'shop.example.com', message.id)
 
   const notice = h.runtime.store.receipts.get(key('project-corrected-notice', ticket.id, message.id))!
@@ -303,13 +332,16 @@ it('says in Chinese what it did, in the conversation the ticket started in', asy
   expect(stored(ticket.id).ended).toMatchObject({ outcome: 'stopped', reason: 'Project corrected to shop.example.com' })
 })
 
-it('takes the correction for a ticket whose execution recorded no project yet', async () => {
+it('refuses a correction of a ticket that recorded no project, rather than confirming a name nobody can check', async () => {
   h = await startRuntime()
   const { ticket } = await h.acceptedTicket(feishu('1', '@bot 修一下 portal.example.com 的按钮'))
   const message = followup('2', '这不是 portal.example.com，是 shop.example.com')
   h.runtime.receive(message); await h.runtime.idle()
-  await correct(ticket.id, 'shop.example.com', message.id)
-  // No project was recorded, so nothing is claimed about what it was.
-  expect(stored(ticket.id).projectCorrections).toEqual([{ to: 'shop.example.com', by: { source: 'feishu', id: 'ou_alice' }, triggerId: message.id,
-    at: expect.any(String) }])
+  // The message holds both names, so with nothing recorded the wrong half reads as well as the right one, and "recorded as
+  // portal" would be a statement the record does not support.
+  await expect(correct(ticket.id, 'portal.example.com', message.id)).rejects.toThrow('recorded no project')
+  await expect(correct(ticket.id, 'shop.example.com', message.id)).rejects.toThrow('recorded no project')
+  expect(stored(ticket.id).ended).toBeUndefined()
+  expect(stored(ticket.id)).not.toHaveProperty('projectCorrections')
+  expect(h.runtime.store.get(KV.projects.learned)).toBeUndefined()
 })

@@ -79,7 +79,7 @@ export function learnProjectAlias(stored: Record<string, LearnedProjectAlias> | 
   const prior = existing?.prior ?? (existing?.source === 'hand-maintained' && existing.project
     ? { project: existing.project, source: 'hand-maintained' as const } : undefined)
   const differs = prior !== undefined && prior.project.toLowerCase() !== teaching.project.toLowerCase()
-  // Case is not a disagreement: `TAP` and `tap` are one project, and the spelling it was first given stays readable.
+  // Case is not a disagreement, so `TAP` and `tap` are one project: the later spelling wins, as the later word does.
   const spelled = prior && !differs ? prior.project : teaching.project
   const entry: LearnedProjectAlias = differs
     ? { alias, source: 'human-correction', prior, sources, ambiguous: true }
@@ -287,7 +287,12 @@ export class Tickets extends EnginePart {
     // Naming what the record already says is not a correction: a message holds both names ("not portal, shop"), and taking the
     // wrong half would stop the work, teach an alias that changes nothing, and tell the person a change that did not happen.
     if (from !== undefined && from.toLowerCase() === request.project.toLowerCase()) {
-      throw new UserError('notAdmissible', { reason: `the ticket already records ${from}; name the project it should be instead` })
+      throw new UserError('notACorrection', { reason: `the ticket already records ${from}, so this names what it already is; name the project it should be instead` })
+    }
+    // With no project recorded, the same message's "A" is as readable as its "B", and "recorded as A" would be a statement the
+    // record does not support. A person who wants that work stopped can stop it; a correction needs a project to correct.
+    if (from === undefined) {
+      throw new UserError('notACorrection', { reason: 'this ticket recorded no project, so there is nothing to correct; name the project it should work in' })
     }
     const correction: ProjectCorrection = { ...from ? { from } : {}, to: request.project, by: request.by, triggerId: request.triggerId, at }
     // A ticket that already ended keeps its record: the correction teaches the alias and claims nothing about the work.

@@ -48,10 +48,11 @@ const clip = (line: string, max: number): string => {
  * request behind in the project it ran in.
  */
 export function correctedNotice(request: string, project: string): string {
-  // A Channel allows an IM message 100 words, and a person's phrase can be as long as their message. Chinese can approach one
-  // word per glyph, and the sentence around the name costs about 30, so the name is clipped to 24 glyphs: a longer one would
-  // fail every delivery attempt and leave the person without the only message that says what was recorded.
-  const named = clip(project, 24)
+  // A Channel allows an IM message 100 words, and a person's phrase can be as long as their message. Chinese approaches one
+  // word per glyph and the sentence around the name names it twice, so 32 glyphs plus that sentence stays near 85 words: more
+  // would fail every delivery attempt, and the person would never read the only message that says what was recorded. The
+  // notice says where it cut the name, so it does not read as a different project from the one the record holds.
+  const named = clip(project, 32)
   return chinese(request)
     ? `项目判定有误：已按 ${named} 记录。本次已停止。要接着做请再发一次，之后会直接用 ${named}。`
     : `The project was wrong: recorded as ${named}. This run is stopped. Send the request again to continue; it will use ${named}.`

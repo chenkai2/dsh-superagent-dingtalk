@@ -181,7 +181,8 @@ DSH_SUPERAGENT_PROJECT_PATH  项目绝对路径（无项目为空串）
    - `ticket.project` **不覆盖**——它是「这张工单实际在哪个项目里干过活」，改成 B 会让记录说谎，并与「PR 归属认 `agent/<name>` 分支在 A 仓」互相打架。
    - `ticket.projectCorrections: Array<{ from, to, by: ActorRef, triggerId, at }>`（**append-only**）：`triggerId` 用于幂等，`by` 记说这句话的人（`{ source, id }`，不是 trigger id）。两个**人**把同一别名纠正到不同项目时，**以最后一条为准**，旧值留在 `sources` 里供追查（已定，见文末）。
    - **别名表**（长期学习）：**唯一权威源在 SQLite，不写任何 JSON 文件**。理由：工单结束与纠正发生在 `store.atomic` 事务里，文件写在事务外，两步之间崩溃就会出现「工单已纠正、别名没记住」；多写一份文件就是多一个会不一致的权威源。落库用 `key('project-corrected', ticketId, triggerId)` 做幂等键（O(1)，不用扫全表），别名表本身存一行 `project-learned`，由 `readLearnedProjects()` 单向读出给索引层消费（`src/kv.ts` 的 `KV.projects`）。
-     人工维护的 `projects-aliases.json` 仍然是**输入**（只读），与库里的 learned 记录**分开**；两者在同一 key 上冲突时：人工优先，且该 key 标 `ambiguous`、判定留空（与 §3 一致），仲裁交给人改文件——这是唯一保留 `ambiguous` 的情形，因为改写它等于用一个模型抽取的说法覆盖人手写的配置。别名键统一按小写存（同一个说法不因大小写变成两条）；大小写不同不算冲突，保留最先写下的拼写。
+     人工维护的 `projects-aliases.json` 仍然是**输入**（只读），与库里的 learned 记录**分开**；两者在同一 key 上冲突时：人工优先，且该 key 标 `ambiguous`、判定留空（与 §3 一致）——这是唯一保留 `ambiguous` 的情形，因为改写它等于用一个模型抽取的说法覆盖人手写的配置。别名键统一按小写存（同一个说法不因大小写变成两条）；大小写不同不算冲突：**保留最后写下的拼写**，旧拼写留在 `sources` 里。
+     **已知边界**：`projects-aliases.json` 目前**没有读取方**，条目里的 `prior` 是写入当时的快照——改了文件不会刷新 `prior`，该别名会一直留空，直到索引层真的读入这个文件、或人工清掉库里的条目。所以 §7.1 不承诺「改文件即可仲裁」，仲裁面另行排期（`TODO.md`）。
      ```json
      { "趋势互动": { "alias": "趋势互动", "project": "portal.example.com", "source": "human-correction",
                      "sources": [{ "project": "portal.example.com", "by": { "source": "feishu", "id": "<actor id>" },
