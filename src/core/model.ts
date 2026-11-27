@@ -280,6 +280,19 @@ export type TicketEndBy = 'executor' | 'human'
 export type TicketOutcome = 'completed' | 'merged' | 'closed' | 'dropped' | 'stopped'
 /** A question for a person; `triggerId` is the human message that raised it, whose conversation it goes back to. */
 export interface Attention { id: string; question: string; triggerId?: string }
+/**
+ * What a person said a ticket's project really is: `from` what the record held when they said it, `to` what they named, `by`
+ * who said it, and `triggerId` the message that said it, which makes replaying that message a no-op.
+ */
+export interface ProjectCorrection {
+  /** Absent when the ticket had recorded no project yet, so nothing is claimed about what it was. */
+  from?: string
+  to: string
+  /** Who said it, as the platform names them, so the same person on another transport stays distinguishable. */
+  by: ActorRef
+  triggerId: string
+  at: string
+}
 /** Ticket aggregate: an authorized work item with its assignments, channels, thread bindings, and inputs. */
 export interface Ticket {
   id: string
@@ -317,6 +330,11 @@ export interface Ticket {
   execution?: Execution
   /** The latest failed delivery of an Input to its worker, until a delivery succeeds. */
   delivery?: { error: string; at: string }
+  /**
+   * What people said the ticket's project is, oldest first. Append-only, and never a rewrite of `project`: the ticket ran
+   * where it ran, and a correction says who disagreed and on which message, so the next request of that kind lands right.
+   */
+  projectCorrections?: ProjectCorrection[]
 }
 /**
  * A Thread a ticket follows, by its key: `own` when the ticket opened it, such as its own pull request, and when and how it

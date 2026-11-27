@@ -437,6 +437,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/cache.spec.ts` | `TextCache` |
 | `tests/queue.spec.ts` | The Runtime's work through the effect queue, and what earlier versions stored |
 | `tests/followups.spec.ts` | A person's follow-up on a Ticket's Thread: its notice to the main Session, the tools that act on it, what a burst costs; a worker's hand-back and context follow, and the main Session's note |
+| `tests/project-correction.spec.ts` | A person's correction of a Ticket's project: the stop a later message cannot resume, the record it keeps and appends, the alias it teaches the project index, and the notice the person gets |
 | `tests/health.spec.ts` | One health entry per part, each cleared by its own next success |
 | `tests/delivery.spec.ts` | `AgentDelivery` |
 | `tests/retry-health.spec.ts`, `tests/role-models.spec.ts` | Model budget retries, and the models of the two roles |
@@ -507,18 +508,18 @@ Nothing deletes old records yet, so these grow without bound: the `trigger`, `di
 
 ### Main Session tools
 
-The main Session has 14 application tools:
+The main Session has 15 application tools:
 
 | Purpose | Tools |
 | --- | --- |
 | Read and route | `orchestrator_read`, `orchestrator_route` |
-| Manage Tickets | `orchestrator_ticket_retry`, `orchestrator_ticket_request_status`, `orchestrator_ticket_note` |
+| Manage Tickets | `orchestrator_ticket_retry`, `orchestrator_ticket_request_status`, `orchestrator_ticket_note`, `orchestrator_ticket_project_correct` |
 | Re-evaluate | `orchestrator_trigger_requeue` |
 | Assess proactive work | `orchestrator_eval`, `orchestrator_eval_read`, `orchestrator_eval_decide` |
 | Communicate and unsubscribe | `orchestrator_reply`, `orchestrator_thread_unsubscribe` |
 | Configure | `orchestrator_settings_save`, `orchestrator_policy_sync`, `orchestrator_prompts_save` |
 
-`orchestrator_route` accepts 1–20 decisions in order. Each accept, attach, stop or ignore runs as a separate Engine command. It also permits ignoring an inferred candidate directly from its card. An `ignore` of a person's Trigger that addressed the agent is carried out as an accept when the gate admits it at explicit strength; the result carries `acceptedAddressed` for that call. The Decision records `audit.acceptedAddressed` only when this call created the Ticket; a replay never adds it to a Decision that already exists, so a model-chosen accept's audit simply lacks that key. `orchestrator_ticket_note` sends a fact as context, not authority.
+`orchestrator_route` accepts 1–20 decisions in order. Each accept, attach, stop or ignore runs as a separate Engine command. It also permits ignoring an inferred candidate directly from its card. An `ignore` of a person's Trigger that addressed the agent is carried out as an accept when the gate admits it at explicit strength; the result carries `acceptedAddressed` for that call. The Decision records `audit.acceptedAddressed` only when this call created the Ticket; a replay never adds it to a Decision that already exists, so a model-chosen accept's audit simply lacks that key. `orchestrator_ticket_note` sends a fact as context, not authority. `orchestrator_ticket_project_correct` is the stop a person asking to correct the project also needs (`docs/002`): the project must be a phrase from their own message, the record keeps what the ticket ran in, and ending as a person's `stopped` is what keeps it from resuming.
 
 Settings saves select `policy`, `eval`, `executor`, `pause`, or `source`; the last also names its Source id. A prompt save with `preview: true` composes text without saving.
 

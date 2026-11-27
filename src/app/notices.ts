@@ -75,9 +75,14 @@ export const threadFollowedNotice = (ticketId: string, thread: string, reason: s
 
 /** Steering relay payload for the main Session: `id` is the request ID that makes delivery idempotent, and `text` is the message body. */
 export interface Relay { id: string; text: string }
-/** What a follow-up asks of the main Session: nothing but a stop the person asks for, since its ticket's worker decides it. */
+/**
+ * What a follow-up asks of the main Session: nothing but the stop the person asks for, since its ticket's worker decides it.
+ * A person who says the project is wrong is asking for that stop and for the correction it records, which
+ * `orchestrator_ticket_project_correct` does and a plain stop does not.
+ */
 const FOLLOWUP_NOTE = 'Its ticket\'s worker has it and decides; act only if the person asks to stop the work '
-  + '(orchestrator_route kind stop with this trigger_id).'
+  + '(orchestrator_route kind stop with this trigger_id), or says the project is wrong: that stops it too and records what they '
+  + 'named (orchestrator_ticket_project_correct with this trigger_id), so a later message does not resume the wrong project.'
 /**
  * Builds a steering relay for a human follow-up trigger that reached at least one live ticket (including an ended ticket
  * that resumed on the follow-up), with the trigger rendered as workers read it, the replied-to message, and the open

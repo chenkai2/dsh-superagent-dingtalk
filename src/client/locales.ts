@@ -739,6 +739,7 @@ const TEXT = {
   'userError.evalFinished': ['评估 {eval} 已结束，或已被之后的评估取代；请对这个触发当前的评估做决定。', USER_ERRORS.evalFinished[1]],
   'userError.notAdmissible': ['这个触发未通过准入：{reason}', USER_ERRORS.notAdmissible[1]],
   'userError.notExplicit': ['通过 orchestrator_route 接单只用于名单内发送者的明确请求；主动接单的候选请用 orchestrator_eval 和 orchestrator_eval_decide 研判。', USER_ERRORS.notExplicit[1]],
+  'userError.notACorrection': ['这不算是对工单项目的纠正：{reason}', USER_ERRORS.notACorrection[1]],
   'userError.ticketStopped': ['有人停止了这个工单；新工作需要通过 orchestrator_route 接单。', USER_ERRORS.ticketStopped[1]],
   'userError.mandateRevoked': ['按当前策略，这个工单的授权已失效；新工作需要通过 orchestrator_route 接单。', USER_ERRORS.mandateRevoked[1]],
   'userError.notRetryable': ['只有进行中的工单可以重试，而且仅当执行器最近一次报告为失败或受阻且此后没有人发过消息，或者向执行器送达输入失败时才可以。', USER_ERRORS.notRetryable[1]],
