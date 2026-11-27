@@ -22,6 +22,7 @@ export const REASONS = {
   directionUnsettled: 'Implementation intent or target direction is not established, or a product/design decision is still required',
   noRuleMatched: 'No enabled admission rule matched',
   ignoredFromCard: 'Ignored from its card, without a rule assessment',
+  noWords: 'The message held no words, so it asked for nothing',
   observed: 'Observe mode: would accept ({text})',
 } as const
 export type ReasonCode = keyof typeof REASONS

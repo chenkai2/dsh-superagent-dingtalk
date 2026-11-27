@@ -46,6 +46,13 @@ export function storeReads(db: DatabaseSync) {
     const before = nearest('<'), after = nearest('>')
     return { ...before ? { before } : {}, ...after ? { after } : {} }
   },
+  /** Newest person's message with words on a thread before `(at, id)`, which is the conversation's own language evidence. */
+  lastWordsOnThread: (threadKeyValue: string, before: TimelinePlace): Trigger | undefined => {
+    const row = db.prepare(`SELECT t.value FROM trigger_thread x JOIN trigger t ON t.id = x.id
+      WHERE x.thread = ? AND (x.at, x.id) < (?, ?) AND x.human = 1 AND trim(json_extract(t.value, '$.text')) <> ''
+      ORDER BY x.at DESC, x.id DESC LIMIT 1`).get(threadKeyValue, before.at, before.id)
+    return row ? JSON.parse(String(row.value)) as Trigger : undefined
+  },
   /** Oldest trigger on a thread, used to title the thread in listings. */
   firstTrigger: (threadKeyValue: string, humanOnly = false): Trigger | undefined => {
     const row = db.prepare(`SELECT t.value FROM trigger_thread x JOIN trigger t ON t.id = x.id WHERE x.thread = ? ${humanOnly ? 'AND x.human = 1' : ''} ORDER BY x.at ASC, t.rowid ASC LIMIT 1`).get(threadKeyValue)
