@@ -18,8 +18,8 @@ export const EXECUTOR_VARIABLES: readonly (VariableSpec & { ticket?: true })[] =
 export interface Variable { key: string; value: string; description: Localized; owner: string }
 
 /**
- * The configured execution root. Ticket directories do not live here since projects moved them to `worktreesRoot`; a
- * prepare command still runs in the root of the directory it is given.
+ * The execution root the settings page shows. Ticket directories live under `worktreesRoot` since projects moved them
+ * there, so this root no longer places one and the `executor.directory` setting behind it no longer affects a Ticket.
  */
 export const executionRoot = (settings: Settings, stateDir: string): string => settings.executor.directory || join(stateDir, 'work')
 /**

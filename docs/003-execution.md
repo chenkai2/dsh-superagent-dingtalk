@@ -52,7 +52,7 @@ Worker subagents, including nested ones, use DeepSeek Harness's `standard` prese
 
 Before the first Assignment, a launch prepares the directory in one order: create the Project's worktree, run the prepare command, then verify the directory.
 
-A Ticket whose Project code resolved (`Ticket.project`) works in a worktree of that Project: `git -C <project.path> worktree add --detach <directory> <project HEAD>`. It is detached because a branch the Project's main copy has checked out cannot be checked out again, so a Ticket's work belongs on the `agent/<name>` branch its worker creates. A path that already is this Project's worktree is reused rather than created again, which a retry and a prepare command that made it both are.
+A Ticket whose Project code resolved (`Ticket.project`) works in a worktree of that Project: `git -C <project.path> worktree add --detach <directory> <project HEAD>`. It is detached because a branch the Project's main copy has checked out cannot be checked out again, so a Ticket's work belongs on the `agent/<name>` branch its worker creates. A path that already is this Project's worktree is reused rather than created again, which both a retry and a prepare command that made it produce.
 
 Creating a worktree heals what an earlier attempt left at the path first: `git worktree prune` clears a registration whose directory is gone, the path is then removed if it exists (a valid worktree and its registration go together; a directory whose `.git` file is gone is no worktree that git can remove, so its files go and the registration is pruned again), and the worktree is added last. All three steps are idempotent, so a retry at the same path succeeds instead of colliding with its own registration.
 
