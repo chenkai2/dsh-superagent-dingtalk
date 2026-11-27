@@ -29,6 +29,8 @@ export interface MainToolsHost {
   readonly settings: Pick<Settings, 'view' | 'block' | 'save' | 'pause' | 'sync'>
   readonly assessor: Pick<MasterAssessor, 'context' | 'read' | 'decide'>
   readonly resources: ResourceHost
+  /** The project a request's own words name, through the index's one resolver; `undefined` when they name none or several. */
+  readonly project: (text: string) => string | undefined
   /** Schedules a pass to carry out work queued by an Engine command (such as an Eval or ticket resume). */
   requestPass(): void
   sendReplies(): Promise<void>
@@ -127,7 +129,8 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
       // alone cannot hold this, because whether a message matches a rule is a judgment about the rules, while whether a person
       // asked is a fact about the message.
       const trigger = host.store.triggers.get(item.trigger_id)
-      const addressed = trigger && decideAddressed({ engine: host.engine, store: host.store, logger: host.context.logger }, trigger)
+      const addressed = trigger
+        && decideAddressed({ engine: host.engine, store: host.store, logger: host.context.logger, project: host.project }, trigger)
       if (addressed?.kind === 'refused') return { refused: addressed.reason }
       if (addressed?.kind === 'accept') {
         const decision = addressed.decision

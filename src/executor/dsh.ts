@@ -2,6 +2,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import { existsSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { key, latestAssignment, latestReport, liveTicket, runningAssignment, threadKey, waitsForPerson } from '../core/index.ts'
@@ -113,7 +114,10 @@ export function mandateInstructions(mandate: Pick<Mandate, 'strength'>): string 
 export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>, settings: Settings,
   stateDir: string): Execution {
   const name = ticketWorktreeName(outcome.name ?? '', ticket.id)
-  const directory = worktreePath(stateDir, name)
+  // A project's Ticket reads the whole project and writes only in its own worktree: the Session starts in the main copy, so the
+  // worker sees the code it must judge, and every write lands under `.worktrees`, where the cleanup and the checks look.
+  const writeRoot = ticket.project ? worktreePath(stateDir, name, ticket.project) : undefined
+  const directory = ticket.project?.path ?? worktreePath(stateDir, name)
   const source = ticket.origin.triggerId
   const note = outcome.note ? `\nRouting note (not the source request): ${outcome.note}` : ''
   const ruleIds = ticket.mandate.basis.rules
@@ -125,17 +129,18 @@ export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutco
   // forgets the branch reports ready with its commits left in a detached worktree.
   // A Ticket without a Project works as it always did: an empty directory its worker may fill, and no worktree to bind.
   const project = ticket.project
-    ? `Project: ${ticket.project.name} at ${ticket.project.path}. Work in this ticket's worktree at ${directory}; never edit the project's main copy.\n`
-      + 'Before your first commit run: git switch -c agent/$DSH_SUPERAGENT_NAME 2>/dev/null || git switch agent/$DSH_SUPERAGENT_NAME'
+    ? `Project: ${ticket.project.name} at ${ticket.project.path}. Your working directory is that project root, and it is READ-ONLY: read and search it freely, never edit, add, commit or build there.\n`
+      + `Do every write — edits, git add and git commit, build output — in this ticket's worktree at ${writeRoot}; the main copy's git status is checked when you report ready, and changes left there fail the ticket.\n`
+      + `Before your first commit run: git -C ${writeRoot} switch -c agent/$DSH_SUPERAGENT_NAME 2>/dev/null || git -C ${writeRoot} switch agent/$DSH_SUPERAGENT_NAME`
       + ' — an existing branch is normal (retry, resume, rebuilt worktree); the pull request comes from it.\n'
     : ''
   const rest = ticket.mandate.strength === 'inferred' && ruleIds
     ? `Proactively accepted under ${ruleIds.join(', ')}. Scope: ${outcome.scope}.${precedence}${note}`
     : note.trim()
   const assignment = `${project}${rest}`.trim()
-  // Every ticket works under the worktrees root, never the work root that holds the projects themselves: a project
-  // ticket gets a worktree of that project there, a ticket without one an empty directory beside it.
-  return { name, directory, assignment }
+  // A project's ticket works in that project's own `.worktrees` directory, so its checkout sits with the repository it belongs
+  // to; a ticket without a project gets an empty directory in the state directory's worktrees root.
+  return { name, directory, ...(writeRoot ? { writeRoot } : {}), assignment }
 }
 /** Character limits for inline assignment and trigger text in worker messages; longer text is read via its resource. */
 const ASSIGNMENT_CHARS = 1500, TRIGGER_CHARS = 600
@@ -285,6 +290,29 @@ export class DshExecutor implements Executor {
     return { ...ticket, execution: ticketExecution(ticket, outcome, this.host.store.settings(), this.host.machine.stateDir) }
   }
   /**
+   * Makes sure the Ticket's directory exists before a worker Session runs in it again. A Ticket's end cleans its directory away,
+   * and the Session that resumes afterwards would point at nothing: a project's worktree is rebuilt through the Worktrees' own
+   * healing path, and a neutral directory is created empty. A launch needs none of this, because `prepareDirectory` runs there.
+   * @throws WorkspaceError when a project's worktree cannot be rebuilt.
+   */
+  private async ensureDirectory(ticket: Ticket): Promise<void> {
+    const execution = ticket.execution
+    const directory = execution?.directory ?? ''
+    const writeRoot = execution?.writeRoot ?? directory
+    // The Session's own directory is the project's main copy for a Ticket with a project: a missing one is reported, never
+    // invented, because a directory created in its place would hide that the project moved.
+    if (directory && !existsSync(directory)) {
+      if (ticket.project) throw new WorkspaceError(`The project directory ${directory} of ${ticket.project.name} does not exist`)
+      await mkdir(directory, { recursive: true })
+    }
+    // The worktree is what the cleanup removes, so a resume after it rebuilds it, through the same healing path a launch uses.
+    if (writeRoot !== directory && !existsSync(writeRoot)) {
+      if (!ticket.project) throw new WorkspaceError(`The ticket directory ${writeRoot} does not exist`)
+      await this.worktrees.create(ticket.project, writeRoot)
+      await mkdir(writeRoot, { recursive: true })
+    }
+  }
+  /**
    * Prepares the directory a worker starts in: creates the project's worktree when the ticket has a project, runs the
    * configured prepare command for a directory that does not exist yet, then checks that the directory is this ticket's
    * to use and that its git configuration is one the agent's git may read.
@@ -292,29 +320,36 @@ export class DshExecutor implements Executor {
    * @throws PrepareFailed, with the command's output, when the prepare command fails.
    */
   private async prepareDirectory(ticket: Ticket): Promise<void> {
-    const directory = ticket.execution?.directory ?? ''
+    const execution = ticket.execution
+    const directory = execution?.directory ?? ''
+    const writeRoot = execution?.writeRoot ?? directory
     // A Ticket whose directory was frozen before worktrees moved keeps it, and no project is resolved for it: a worktree
     // built at that path would sit in the old work root, which the cleanup below the worktrees root never touches. Nor is one
     // resolved once the Ticket has launched, because the directory then holds whatever its worker put there.
-    const resolvable = this.worktrees.owns(directory) && !ticket.assignments.some(assignment => assignment.startedAt)
+    const resolvable = this.worktrees.owns(writeRoot, ticket.project) && !ticket.assignments.some(assignment => assignment.startedAt)
     const project = ticket.project ?? (resolvable ? this.host.project?.(ticket) : undefined)
-    await mkdir(dirname(directory), { recursive: true })
-    const standing = await this.worktrees.standing(directory, project)
-      .catch((error: unknown) => { throw new WorkspaceFailed(`The ticket directory ${directory} could not be inspected: ${String(error)}`) })
+    // A project's `.worktrees` directory sits inside the project, so it is hidden from that project's `git status` before the
+    // directory that holds it exists.
+    if (project) await this.worktrees.exclude(project)
+    // A project's Session starts in the main copy, which has to be that project's own checkout and is never created here.
+    if (project && directory !== writeRoot) await this.worktrees.verifyCheckout(directory, project)
+    await mkdir(dirname(writeRoot), { recursive: true })
+    const standing = await this.worktrees.standing(writeRoot, project)
+      .catch((error: unknown) => { throw new WorkspaceFailed(`The ticket directory ${writeRoot} could not be inspected: ${String(error)}`) })
     // A directory that holds another worktree would mix this ticket's changes into that one's, so it is refused rather
     // than reset: only a path with nothing of its own is ever created over.
-    if (standing.state === 'foreign') throw new WorkspaceFailed(`The ticket directory ${directory} cannot be used: ${standing.why}`)
+    if (standing.state === 'foreign') throw new WorkspaceFailed(`The ticket directory ${writeRoot} cannot be used: ${standing.why}`)
     if (standing.state === 'absent') {
       // With a project the worktree is the workspace: create it here, and fail the ticket rather than fall back to an
       // empty directory, where the worker would find none of the project's code.
-      if (project) await this.worktrees.create(project, directory)
-      await this.prepareCommand(ticket, directory, project)
-      await mkdir(directory, { recursive: true })
+      if (project) await this.worktrees.create(project, writeRoot)
+      await this.prepareCommand(ticket, writeRoot, project)
+      await mkdir(writeRoot, { recursive: true })
     }
     // Checked on every launch, not only when a directory was created: one that merely exists may be another ticket's
     // worktree, or what a failed attempt left behind.
-    await this.worktrees.verify(directory, project)
-    await verifyDirectory(directory, this.host.context.subprocess, this.host.lifetime)
+    await this.worktrees.verify(writeRoot, project)
+    await verifyDirectory(writeRoot, this.host.context.subprocess, this.host.lifetime)
   }
   /**
    * Runs the configured `executor.prepare` command in the ticket directory's parent with the ticket's execution
@@ -362,6 +397,8 @@ export class DshExecutor implements Executor {
   private async deliverQueued(ticketId: string): Promise<void> {
     // A stop of the worker's background work ends with a cancel, which would drop what is delivered meanwhile.
     await this.stopped(ticketId)
+    // A cleanup the ticket's end started finishes first, so the directory this delivery works in is not removed under it.
+    await this.cleaned(ticketId)
     const first = this.host.store.tickets.get(ticketId)
     const target = first && liveTicket(first) ? runningAssignment(first) : undefined
     if (!first || !target || !first.undelivered.length) return
@@ -382,6 +419,7 @@ export class DshExecutor implements Executor {
         }
         const input = ticket.inputs.find(item => item.id === inputId)
         try {
+          await this.ensureDirectory(ticket)
           // Recreate the worker session if it was externally deleted.
           if (!this.host.context.agents.get(sessionId as SessionId)) {
             await this.host.sessions.ensure(sessionId, ticket.execution?.directory ?? '', ticket.title, 'worker')
@@ -593,6 +631,18 @@ export class DshExecutor implements Executor {
       () => { if (!current()) throw new Error('Launch authorization changed before worker delivery') },
       () => { this.host.engine.assignmentStarted(ticket.id, assignment.id) })
     this.host.engine.assignmentStarted(ticket.id, assignment.id)
+  }
+  /**
+   * The project main copy's `git status --porcelain` lines: what this Ticket's worker left in the copy it may only read. A
+   * Ticket without a project has no main copy, and an empty list is the clean state a project Ticket must leave.
+   * @param ticket - The Ticket whose project main copy is read.
+   */
+  async mainCopyChanges(ticket: Ticket): Promise<string[]> {
+    const project = ticket.project
+    if (!project) return []
+    return this.worktrees.status(project).catch((error: unknown) => {
+      throw new WorkspaceFailed(`The main copy of ${project.name} could not be read: ${String(error)}`)
+    })
   }
   /** Returns the stored ticket for `agent` when it is a worker session, or undefined otherwise. */
   private ticketOf(agent: Agent): Ticket | undefined {

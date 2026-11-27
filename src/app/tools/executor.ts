@@ -17,6 +17,8 @@ export interface ExecutorToolsHost {
   readonly resources: ResourceHost
   /** GitHub Source context whose pull-request rules govern claiming a reported PR. */
   readonly github: SourceContext
+  /** What the Ticket's project main copy holds beyond its commit: the lines a worker's stray writes leave there. */
+  mainCopyChanges(ticket: Ticket): Promise<string[]>
   sendReplies(): Promise<void>
 }
 
@@ -85,6 +87,21 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
       execute: async (args, signal) => {
         const current = host.store.tickets.get(ticketId)
         if (!current || !liveTicket(current)) throw new Error('Ticket ended (PR was closed or work finished); do not resume it')
+        // The worker reads the project's main copy and writes only in its worktree. Nothing enforces that path but this check:
+        // a ready report whose project copy changed fails here, so the change is recorded against the ticket that made it
+        // instead of being found later, in the operator's own working tree.
+        if (args.state === 'ready' && current.project) {
+          const changed = await host.mainCopyChanges(current)
+          if (changed.length) return host.store.atomic(() => {
+            const summary = `The main copy of ${current.project!.name} at ${current.project!.path} was changed while this ticket worked, `
+              + `and work belongs in ${current.execution?.writeRoot ?? 'its own worktree'}: ${changed.slice(0, 20).join(' | ')}`
+            const report = { state: 'failed' as const, summary }
+            const updated = host.engine.report(ticketId, report)
+            const relay = reportRelay(updated, report)
+            if (relay) host.sessions.relay(relay.id, relay.text)
+            return { reported: true, state: 'failed', notification: 'orchestrator', main_copy_changes: changed.slice(0, 20) }
+          })
+        }
         const pull = args.pr_number != null ? await readPull(host.github, args.pr_number, signal) : undefined
         // Claim the PR, record the report, and queue the relay atomically so a rejected PR claim or invalid report leaves no partial state, and a recorded report always reaches the main Session.
         return host.store.atomic(() => {

@@ -280,6 +280,18 @@ it('relays an explicit member mention as a candidate and creates the ticket, ack
   expect(await route({ kind: 'accept', trigger_id: trigger.id, title: 'again', worktree_name: worktreeName, acknowledgement: 'x' })).toMatchObject({ ticket: { ticket_id: ticket.id } })
 })
 
+it('rebuilds a ticket directory the cleanup removed before it resumes its worker', async () => {
+  const { ticket } = await acceptedTicket()
+  await runtime.idle()
+  const directory = ticket.execution!.directory
+  expect(existsSync(directory)).toBe(true)
+  // Ending a Ticket removes its directory, and a worker that resumes afterwards must not point at nothing.
+  rmSync(directory, { recursive: true, force: true })
+  await receive(feishu('8', '再看一下这个', { mentions: [], root_id: 'om_1', sender_id: 'ou_guest' }))
+  await runtime.idle()
+  expect(existsSync(directory)).toBe(true)
+})
+
 it('fans a person\'s later thread message out to the live worker as context and tells the orchestrator, without an Eval', async () => {
   const { ticket, sessionId } = await acceptedTicket()
   deliveries.mockClear()
@@ -2155,6 +2167,77 @@ describe('project-scoped execution wiring', { timeout: 30_000 }, () => {
     expect(runtime.store.tickets.get(accepted.ticket.ticket_id)!.project).toMatchObject({ name: 'widgets', basis: 'named' })
   })
 
+  it('records the project a person\'s addressed request names when the code accepts it for them', async () => {
+    index()
+    const trigger = feishu('34', '@bot 小部件 的 README 里有没有部署说明')
+    await receive(trigger)
+    const accepted = await route({ kind: 'ignore', trigger_id: trigger.id, reason: 'a read-only question' })
+    const ticket = runtime.store.tickets.get((accepted.ticket as { ticket_id: string }).ticket_id)!
+    // The code built this accept, so only the request's own words could name the project: the resolver decides it, and the
+    // accept hands that name to the engine rather than leaving the record empty.
+    expect(ticket.project).toMatchObject({ name: 'widgets', basis: 'named' })
+  })
+
+  it('resolves a project the request names outright, with no alias for it', async () => {
+    index([{ name: 'tap.e.weibo.com' }])
+    const trigger = feishu('38', '@bot 看一下 tap.e.weibo.com 这个项目的 README 里有没有部署说明')
+    await receive(trigger)
+    const accepted = await route({ kind: 'ignore', trigger_id: trigger.id, reason: 'a read-only question' })
+    const ticket = runtime.store.tickets.get((accepted.ticket as { ticket_id: string }).ticket_id)!
+    // The request's words count a project's own name as much as an alias: a code-built accept has no model to name it.
+    expect(ticket.project).toMatchObject({ name: 'tap.e.weibo.com', basis: 'named' })
+  })
+
+  it('fails a ready report when the worker changed the project main copy', async () => {
+    index()
+    const trigger = feishu('43', '@bot 小部件 里的按钮文案改一下')
+    await receive(trigger)
+    const result = await route({ kind: 'accept', trigger_id: trigger.id, title: '改按钮文案', worktree_name: 'rename-copy',
+      acknowledgement: '收到。', project: 'widgets' })
+    const ticket = runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!
+    gitAnswers(ticket.execution!.writeRoot!)
+    answers[`git -C ${projectPath()} rev-parse --show-toplevel`] = `${projectPath()}\n`
+    answers[`git -C ${projectPath()} rev-parse --git-common-dir`] = `${join(projectPath(), '.git')}\n`
+    // The worker edited a file in the copy it may only read.
+    answers[`git -C ${projectPath()} status --porcelain`] = ' M file.txt\n'
+    await runtime.idle()
+    // The accept may have launched before these answers existed; launch again so the worker session really starts.
+    const stored = runtime.store.tickets.get(ticket.id)!
+    runtime.executor.start(stored, stored.assignments.at(-1)!)
+    await runtime.idle()
+    const reported = await runTool(`worker-${ticket.id}`, 'orchestrator_report', { state: 'ready', summary: 'done' })
+    expect(reported).toMatchObject({ reported: true, state: 'failed', main_copy_changes: [' M file.txt'] })
+    const failed = runtime.store.tickets.get(ticket.id)!.assignments.at(-1)!.report
+    expect(failed).toMatchObject({ state: 'failed', summary: expect.stringContaining('main copy of widgets') })
+    expect(failed!.summary).toContain('work belongs in')
+  })
+
+  it('rebuilds a project worktree the cleanup removed before resuming its worker', async () => {
+    index()
+    const trigger = feishu('39', '@bot 小部件 里的按钮文案改一下')
+    await receive(trigger)
+    const result = await route({ kind: 'accept', trigger_id: trigger.id, title: '改按钮文案', worktree_name: 'rename-copy',
+      acknowledgement: '收到。', project: 'widgets' })
+    const ticket = runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!
+    const writeRoot = ticket.execution!.writeRoot!
+    gitAnswers(writeRoot)
+    answers[`git -C ${projectPath()} rev-parse --show-toplevel`] = `${projectPath()}\n`
+    answers[`git -C ${projectPath()} rev-parse --git-common-dir`] = `${join(projectPath(), '.git')}\n`
+    await runtime.idle()
+    const stored = runtime.store.tickets.get(ticket.id)!
+    if (!existsSync(writeRoot)) { runtime.executor.start(stored, stored.assignments.at(-1)!); await runtime.idle() }
+    expect(existsSync(writeRoot)).toBe(true)
+    subprocess.spawn.mockClear()
+    rmSync(writeRoot, { recursive: true, force: true })
+    await receive(feishu('40', '再看一下', { mentions: [], root_id: 'om_39', sender_id: 'ou_guest' }))
+    await runtime.idle()
+    // The worktree comes back; the project's own copy is never touched, because only the worktree is the ticket's.
+    expect(existsSync(writeRoot)).toBe(true)
+    expect(existsSync(projectPath())).toBe(true)
+    expect(subprocess.spawn.mock.calls.map(([spec]) => (spec as { argv: string[] }).argv.join(' '))
+      .some(argv => argv.includes('worktree add') && argv.includes(writeRoot))).toBe(true)
+  })
+
   it('leaves the project empty when the index does not hold the name, without refusing the accept', async () => {
     index()
     const trigger = feishu('33', '@bot 改一下按钮文案')
@@ -2173,13 +2256,16 @@ describe('project-scoped execution wiring', { timeout: 30_000 }, () => {
     const result = await route({ kind: 'accept', trigger_id: trigger.id, title: '改按钮文案', worktree_name: 'rename-copy',
       acknowledgement: '收到。', project: 'widgets' })
     const ticket = runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!
-    // The assignment text is what the worker reads under ticket/<id>/assignment and what the launch caps at 1500 characters.
+    // The session works in the project's main copy and may only read it; every write belongs in the ticket's worktree.
     const assignment = ticket.execution!.assignment
+    expect(ticket.execution!.directory).toBe(projectPath())
+    expect(ticket.execution!.writeRoot).toBe(join(projectPath(), '.worktrees', ticket.execution!.name))
     expect(assignment).toContain('Project: widgets at ' + projectPath())
-    expect(assignment).toContain(ticket.execution!.directory)
-    expect(assignment).toContain('git switch -c agent/$DSH_SUPERAGENT_NAME 2>/dev/null || git switch agent/$DSH_SUPERAGENT_NAME')
+    expect(assignment).toContain('READ-ONLY')
+    expect(assignment).toContain(ticket.execution!.writeRoot!)
+    expect(assignment).toContain(`git -C ${ticket.execution!.writeRoot} switch -c agent/$DSH_SUPERAGENT_NAME 2>/dev/null || git -C ${ticket.execution!.writeRoot} switch agent/$DSH_SUPERAGENT_NAME`)
     // A cut at the inline limit still keeps them: they come first.
-    expect(assignment.indexOf('Project:')).toBeLessThan(assignment.indexOf('git switch'))
+    expect(assignment.indexOf('Project:')).toBeLessThan(assignment.indexOf('git -C'))
     // An existing branch is the normal case, not an error, and the PR comes from it.
     expect(assignment).toContain('the pull request comes from it')
   })

@@ -14,6 +14,8 @@ export interface AddressedHost {
   readonly engine: Pick<EngineForMainSession, 'decide' | 'reply'>
   readonly store: Pick<Store, 'triggers' | 'settings' | 'read'>
   readonly logger: Pick<Context['logger'], 'warn'>
+  /** The project the request's own words name, through the index's one resolver; nothing when they name none or more than one. */
+  readonly project: (text: string) => string | undefined
 }
 /** What deciding it did: opened the Ticket the request asked for, answered a message with no words, or refused it. */
 export type AddressedOutcome =
@@ -111,10 +113,14 @@ export function decideAddressed(host: AddressedHost, trigger: Trigger, evalId?: 
     return { kind: 'ignore', decision, answered: answerWithoutWords(host, trigger, chinese) }
   }
   const before = host.store.triggers.disposition(trigger.id)?.decisionId
+  // The code built this accept, so no model named the project: the request's own words do, through the same resolver the
+  // engine's accept path reads, and an unresolved request keeps the field empty rather than guessing.
+  const project = host.project(trigger.text)
   try {
     const decision = decide({ kind: 'accept', title, scope: title, reason: { code: 'explicitRouted' },
       acknowledgement: addressedAcknowledgement(chinese, title),
       name: `work-${createHash('sha1').update(trigger.id).digest('hex').slice(0, 6)}`,
+      ...(project ? { project } : {}),
       // Recorded on the Decision, so the fallback stays visible after the tool result is gone.
       audit: { acceptedAddressed: true }, forced: true })
     // A Decision that created no ticket cannot answer the request; nothing else can either, so say so.

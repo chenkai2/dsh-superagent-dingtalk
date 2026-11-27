@@ -116,6 +116,8 @@ export class Runtime extends Service implements SourceHost {
       const effects = this.effects = new Effects(store, board)
       /** The request's own words: every Trigger the accept took, in the order it took them. */
       const requestText = (ticket: Ticket): string => ticket.origin.triggerIds.map(id => store.triggers.get(id)?.text ?? '').join('\n')
+      /** The project one message names, through the index's one resolver, as the name an accept hands the engine. */
+      const requestProject = (text: string): string | undefined => resolveProject(ctx, undefined, text)?.name
       const sources = this.sources = new SourceRegistry(() => store.settings(), board, kind => {
         // Sync source member lists once startup completes when a source plugin loads dynamically.
         if (kind.policy?.sync) void this.ready?.then(() => this.settings.syncable().includes(kind.kind) ? this.settings.sync(kind.kind) : undefined)
@@ -144,7 +146,7 @@ export class Runtime extends Service implements SourceHost {
         project: ticket => ticket.project ?? resolveProject(ctx, undefined, requestText(ticket)),
         repliedTo: trigger => repliedTo({ store, sources }, trigger) })
       this.assessor = new MasterAssessor({ get engine() { return runtime.engine }, commands, get deployment() { return setup.deployment }, effects,
-        store, logger: ctx.logger,
+        store, logger: ctx.logger, project: requestProject,
         settings: () => store.settings(), paused: () => this.paused(), threadContext: trigger => sources.threadContext(trigger),
         deliver: (id, text) => sessions.prompt(masterId, id, text, 'steer'), candidateCard: candidate => candidateCard(links, candidate) })
       const outbox = this.outbox = new Outbox({ store, effects, sources, commands, paused: () => this.paused() })
@@ -185,8 +187,9 @@ export class Runtime extends Service implements SourceHost {
           await this.settings.save(block, { enabled: current?.enabled ?? true, config }, store.blockRevision(block), 'panel')
         } }
       this.toolHost = { context: ctx, engine, store, prompts, sessions, settings: this.settings, assessor, resources,
-        get github() { return runtime.context({ kind: 'github', health: ['github'] }) },
+        project: requestProject, get github() { return runtime.context({ kind: 'github', health: ['github'] }) },
         requestPass: () => { passes.request() }, sendReplies: () => outbox.sent(),
+        mainCopyChanges: ticket => this.executor.mainCopyChanges(ticket),
         quietly: run => { this.quiet++; try { return run() } finally { this.quiet-- } } }
       this.ready = this.initialize()
     } catch (error) {

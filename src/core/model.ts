@@ -359,7 +359,18 @@ export interface TicketProject {
  * Thread closed; the ticket then ends unless its work has not finished (see `Tickets.unfinished`).
  */
 export interface Follow { thread: string; own: boolean; closed?: { at: string; outcome: 'merged' | 'closed' } }
-export interface Execution { name: string; directory: string; assignment: string }
+export interface Execution {
+  /** The Ticket's short English name, also the name of its directory. */
+  name: string
+  /** The Session's working directory: a project's main copy for a Ticket with a project, its own directory otherwise. */
+  directory: string
+  /**
+   * Where the Ticket's writes belong: its worktree under the project's `.worktrees` directory when it has a project, and the
+   * same directory as `directory` when it has none. The main copy is readable from the Session, never writable.
+   */
+  writeRoot?: string
+  assignment: string
+}
 
 /** Whether a ticket is open: it has not ended. */
 export const liveTicket = (ticket: Pick<Ticket, 'ended'>): boolean => !ticket.ended

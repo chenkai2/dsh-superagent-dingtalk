@@ -22,7 +22,7 @@ An `idle` Ticket has finished its turn without an outstanding question. A Trigge
 
 ## The Executor
 
-Each Ticket gets an Executor Session named `worker-<ticket id>` and a directory named after the Ticket's short name. Directories are created under `<stateDir>/worktrees`, never in the work root that holds the Projects, so a Ticket's checkout cannot be mistaken for the operator's.
+Each Ticket gets an Executor Session named `worker-<ticket id>` and a directory named after the Ticket's short name. A Ticket with a Project starts that Session in the Project's own main copy, so the worker reads the whole Project, and works in `<project.path>/.worktrees/<name>` (`execution.writeRoot`), which is the only place its writes belong; a Ticket without a Project keeps one directory under `<stateDir>/worktrees`, which is both, and a Ticket's checkout is never the operator's.
 
 Executor Sessions run commands without approval as the operator's OS user. Their `dsh-superagent-worker` preset contains the tools needed for work and moves foreground shell commands to background jobs after 5 seconds. This lets a worker receive new messages at the next step instead of waiting for a long command to finish.
 
@@ -52,19 +52,27 @@ Worker subagents, including nested ones, use DeepSeek Harness's `standard` prese
 
 Before the first Assignment, a launch prepares the directory in one order: create the Project's worktree, run the prepare command, then verify the directory.
 
-A Ticket whose Project code resolved (`Ticket.project`) works in a worktree of that Project: `git -C <project.path> worktree add --detach <directory> <project HEAD>`. It is detached so the Ticket's work lands only on the `agent/<name>` branch its worker creates; a branch name would also fail whenever the Project's main copy holds it. A path that already is this Project's worktree is reused rather than created again, which both a retry and a prepare command that made it produce.
+A Ticket whose Project code resolved (`Ticket.project`) works in a worktree of that Project at `<project.path>/.worktrees/<name>`: `git -C <project.path> worktree add --detach <writeRoot> <project HEAD>`. The hidden directory inside the Project is hidden from that Project's own `git status` by the anchored line `/.worktrees/` in the repository's `info/exclude`, written once and never committed, so the operator's copy stays clean without a tracked file changing. It is detached so the Ticket's work lands only on the `agent/<name>` branch its worker creates; a branch name would also fail whenever the Project's main copy holds it. A path that already is this Project's worktree is reused rather than created again, which both a retry and a prepare command that made it produce.
 
 Creating a worktree heals what an earlier attempt left at the path first: `git worktree prune` clears a registration whose directory is gone, the path is then removed if it exists (a valid worktree and its registration go together; a directory whose `.git` file is gone is no worktree that git can remove, so its files go and the registration is pruned again), and the worktree is added last. All three steps are idempotent, so a retry at the same path succeeds instead of colliding with its own registration.
 
+### The main copy is read-only, and checked
+
+The Session's working directory is the Project's main copy, so a worker can read, search and run read-only commands across the whole Project. Nothing in the file system stops it from writing there: the assignment text says the copy is read-only and that every write belongs in `<project.path>/.worktrees/<name>`, and the check below is what makes that instruction detectable rather than decorative. A worker that writes in the main copy therefore spends the isolation this layout used to give by path alone, and the ticket records it after the fact.
+
+When the worker reports `ready` for a Ticket with a Project, the Executor reads `git -C <project.path> status --porcelain` first. A clean copy passes. A dirty one means the worker wrote where it was told not to, and the report is recorded as `failed` instead, with the changed paths in its summary and on the main Session's notice; the Ticket then waits for a person rather than being completed on work left in the operator's copy.
+
 A worktree that cannot be created fails the Ticket with git's reason, and the worker never starts in an empty directory instead. The same holds for a directory that holds another worktree: it is refused rather than reset, so one Ticket's changes are never mixed into another's or thrown away.
 
-Then the prepare command runs with `sh`, if one is configured, in the directory's parent, `<stateDir>/worktrees`, with the execution variables of its own Ticket. It has ten minutes to finish. This is a change of contract: a prepare command used to run in the execution root, and one that creates the Ticket's checkout with `git worktree` now finds that the engine already did. Without a prepare command, the Ticket's worktree or, without a Project, an empty directory is the worker's starting point.
+Then the prepare command runs with `sh`, if one is configured, in the parent of the directory it prepares (`<project.path>/.worktrees` or `<stateDir>/worktrees`), with the execution variables of its own Ticket. It has ten minutes to finish. This is a change of contract: a prepare command used to run in the execution root, and one that creates the Ticket's checkout with `git worktree` now finds that the engine already did. Without a prepare command, the Ticket's worktree or, without a Project, an empty directory is the worker's starting point.
 
 A failed command fails the Ticket and records its output. A retry or a person's message on one of the Ticket's Threads tries preparation again. A pull request belongs to the Ticket when its branch's last path segment matches the Ticket's short name.
 
-The directory is verified on every launch, not only when it was created, because one that merely exists may be another Ticket's worktree. With a Project the check requires that the directory's work tree root is the directory itself and that its repository is the Project's; without one it requires that the directory exists and is no one else's worktree. A Ticket recorded before directories moved keeps the directory in its record and is checked this way; it is never migrated or recomputed, and no project is resolved for it. Resolving one would build a worktree at that frozen path, outside `<stateDir>/worktrees`, where the cleanup never looks.
+The worktree is verified on every launch, not only when it was created, because one that merely exists may be another Ticket's worktree; with a Project, the Session's own directory is verified too, and must be that Project's checkout. With a Project the check requires that the directory's work tree root is the directory itself and that its repository is the Project's; without one it requires that the directory exists and is no one else's worktree. A Ticket recorded before directories moved keeps the directory in its record and is checked this way; it is never migrated or recomputed, and no project is resolved for it. Resolving one would build a worktree at that frozen path, outside `<stateDir>/worktrees`, where the cleanup never looks.
 
 ### Cleaning up a Ticket directory
+
+A Ticket's Session must always have a directory to start in: a launch and a resume both ensure the Ticket's worktree exists before a turn runs, rebuilding a worktree the cleanup removed through the same prune, remove and add path a launch uses, and creating a neutral directory empty. A Project's own main copy is never created: if it is gone, the session fails with that reason instead.
 
 A Ticket's directory is removed after the ticket ends, outside the ending transaction: the end runs inside a database transaction, where a file cannot be deleted and a rollback would leave the worktree gone. A launch waits for a cleanup that runs, so a Ticket a person resumed prepares its directory after the removal instead of beside it.
 
@@ -72,7 +80,7 @@ A directory is kept while the Ticket is live, except for `failed` work: a person
 
 Its branches are never deleted, `agent/<name>` among them: it is the root of the Ticket's pull request.
 
-Cleanup runs at startup and every six hours, and a failure is logged and counted on the Executor instance: it never changes a Ticket's outcome. The startup sweep also removes the registrations of the directories it deleted, and any registration under `<stateDir>/worktrees` that no open Ticket uses. A registration outside that root is the operator's checkout and is left alone.
+Cleanup runs at startup and every six hours, and a failure is logged and counted on the Executor instance: it never changes a Ticket's outcome. The startup sweep also removes the registrations of the directories it deleted. It clears only two layers: the direct children of `<stateDir>/worktrees`, and the direct children of a known Project's `.worktrees` directory. A Project's main copy, a directory beside one of those layers, and a registration outside them are the operator's and are left alone; an unregistered directory is removed only when its own `.git` file says it was a ticket worktree.
 
 ### The project index
 
