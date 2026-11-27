@@ -200,6 +200,10 @@ That context supplies deployment and commands, setup readiness (`ready`, `config
 
 `prepare(ticket, outcome)` supplies the Engine's `prepareTicket` hook: short name, directory and `ticketExecution` assignment text. `workerSessionId(ticket.id)` derives the Session id.
 
+Every Ticket directory is `<stateDir>/worktrees/<execution name>`, never the work root that holds the Projects themselves. A launch prepares it in that order: with a Project (`Ticket.project`, or the `project` the host resolves for a Ticket that records none) the Project's worktree is created unless the path already is one, then the `prepare` command runs in the directory's parent, then the directory is verified — that it is this Project's worktree, or, without a Project, a directory that is no one else's worktree — and checked for git configuration the agent's git would read. A directory that holds another worktree is refused, and a worktree that cannot be created fails the Ticket rather than falling back to an empty directory.
+
+`stop` also starts the directory's cleanup after the ending transaction, outside it: `tickets.end` runs inside `store.atomic`, where a file cannot be deleted and a rollback would leave the worktree gone. A cleanup a launch must not race is tracked per Ticket, so a resumed Ticket prepares its directory after the cleanup rather than beside it. The sweep at startup and every six hours removes what no open Ticket uses.
+
 `WorkerSlots` reserves capacity before a launch or a delivery that wakes an idle worker. A human message can use one slot beyond `maxWorkers`, and wakes have priority over launches. `activeCount` supplies panel load.
 
 Transient provider and network failures get three retries. Launches use effect backoff; failed turns receive continuation messages after 15, 30 and 60 seconds. `inputMessage` renders each Input from current Ticket state, and `mandateInstructions` adds the matched-rule limits for inferred work.
@@ -353,6 +357,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/views/settings.ts` | The settings page's view: each block with its revision, each Source's settings with its kind's form, and the execution environment |
 | `src/app/views/overview.ts` | The overview: Tickets that need a person, problems, the last day's flow and the Executor's load |
 | `src/executor/dsh.ts` | The DshExecutor, `WorkerSlots`, `ticketExecution`, `inputMessage` and `mandateInstructions` |
+| `src/executor/worktrees.ts` | The worktrees Tickets work in: `Worktrees` creates a Project's worktree detached from its HEAD, judges whether a directory is the one a Ticket may use (`DirectoryStanding`), removes it with its registration and `release`/`sweep` decide what no Ticket needs any more; `gitRunner` runs git as a worker does |
 | `src/executor/background.ts` | A worker's background work in DeepSeek Harness, the shell jobs its Session owns (`ctx.jobs`) and its subagents (`ctx.subagents`): `runningJobs`, `untilQuiet`, `killJobs`, `collectJobs`, `stopSubagents`, `stopBackground`, `until`, and `cancelled`, the workers whose turn a stop of their subagents cancelled |
 | `src/infra/commands.ts` | `Commands`, the CLI transport: `run`; `api` and `pages`, limited to the configured repository and validated; `lark` as the bot; `git`. `CliError` carries the code a command's output reports, such as a GitHub HTTP status, and a command that prints nothing fails with how it ended, never with its arguments; `validItems` skips and counts the malformed items of a list |
 | `src/infra/environment.ts` | The agent's process environment: command shims, the git configuration and credential helper, `runAsWorker`, and the checks of the environment and of a Ticket's directory |
@@ -444,6 +449,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/runtime.spec.ts` | The whole application on a simulated DeepSeek Harness host, through tools and HTTP, and what a stop does to the Assignments it interrupts and to the question a restart asks again |
 | `tests/tools.spec.ts` | The Sessions' tools: what `orchestrator_read` reads for each role, and the shapes and checks of the other main Session tools |
 | `tests/runtime-concurrency.spec.ts` | Work that overlaps: Triggers during a pass, Tickets that change during deliveries and launches |
+| `tests/worktrees.spec.ts` | Ticket worktrees against real git repositories: the detached creation, the reset of a stale path and of a half-broken worktree, the refusal of another worktree, the identity of a directory without a Project, and the sweep's waits and failures |
 | `tests/http.spec.ts` | The same-origin and loopback checks, the status of each kind of failure, the body limit, path parameters and queries |
 | `tests/projects.spec.ts` | The project index: `.git` directories and files, bare, broken and submodule skips, one entry per common directory, real-path normalization, aliases and every resolution outcome including ambiguity, persisted-entry validation, a disappeared or reconfigured missing root, reused facts, the non-blocking HTTP refresh, and the main Session's keyword search |
 | `tests/settings.spec.ts` | Settings saves that race a model or account check, a Policy sync that a save outran, and the refusals of the pause, a sync and a block |

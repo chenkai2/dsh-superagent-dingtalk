@@ -2,23 +2,24 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { mkdir, rmdir, stat } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { mkdir } from 'node:fs/promises'
+import { dirname } from 'node:path'
 import { key, latestAssignment, latestReport, liveTicket, runningAssignment, threadKey, waitsForPerson } from '../core/index.ts'
-import type { AssessmentOutcome, Assignment, EngineForExecutor, Execution, Executor, Mandate, PolicyEffect, Ticket, TicketInput, Trigger }
-  from '../core/index.ts'
+import type { AssessmentOutcome, Assignment, EngineForExecutor, Execution, Executor, Mandate, PolicyEffect, Ticket, TicketInput, TicketProject,
+  Trigger } from '../core/index.ts'
 import type { Machine } from '../deployment.ts'
 import { runAsWorker, verifyDirectory } from '../infra/environment.ts'
 import { isChinese } from '../infra/text.ts'
 import type { Settings } from '../policy.ts'
 import type { Store } from '../app/store.ts'
 import { Later, type Effects } from '../app/effects.ts'
-import { executionRoot, type Variable } from '../app/execution-environment.ts'
+import { worktreePath, type Variable } from '../app/execution-environment.ts'
 import type { Sessions } from '../app/sessions.ts'
 import { WorktreeNameSchema } from '../app/assessment.ts'
 import { resultRelay } from '../app/notices.ts'
 import type { HealthEntry } from '../infra/health.ts'
 import { cancelled, collectJob, killJobs, runningJobs, stopBackground, stopSubagents, until, untilQuiet } from './background.ts'
+import { gitRunner, Worktrees, WorkspaceError } from './worktrees.ts'
 
 const now = (): string => new Date().toISOString()
 /** Returns the worker session ID (`worker-<ticketId>`) for a ticket. */
@@ -33,6 +34,8 @@ const TRANSIENT_TRIES = 3, TRANSIENT_BACKOFF_MS = 15_000
 const BACKGROUND_LIMIT_MS = 30 * 60_000
 /** How long a host stop waits for the workers' background work to stop. */
 const SHUTDOWN_STOP_MS = 10_000
+/** How often worktrees no open ticket uses are swept: at startup, then this often, since a ticket's end only starts the wait. */
+const SWEEP_INTERVAL_MS = 6 * 3600_000
 /** How long a worker that goes on after a passing failure waits for a worker slot, or for processing to resume, between looks. */
 const SLOT_WAIT_MS = 5000
 /** True when an input comes from a person (a non-context human trigger or a direct text input such as a status request). */
@@ -42,6 +45,12 @@ const fromPerson = (input?: TicketInput): boolean => input?.kind === 'trigger' ?
  * DshExecutor catches it to mark the ticket failed immediately rather than retrying automatically, because an existing directory counts as prepared and an automatic retry would treat whatever a failed prepare command left behind in the directory as a prepared workspace.
  */
 class PrepareFailed extends Error {}
+/**
+ * Internal error thrown when a ticket's workspace cannot be prepared, such as a worktree that cannot be created or a
+ * directory that belongs to another ticket. Like `PrepareFailed` it fails the ticket at once instead of retrying: the
+ * directory is the reason, and an automatic retry would find the same one.
+ */
+class WorkspaceFailed extends Error {}
 const PASSING = new RegExp(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND', 'EPIPE', 'UND_ERR', 'socket hang up', 'fetch failed',
   'network error', 'overloaded', 'rate limit', '\\b(?:408|429|50[0-4])\\b'].join('|'), 'i')
 /**
@@ -77,6 +86,12 @@ export interface ExecutorHost {
   paused(): boolean
   /** Execution environment variables for `ticket`, passed to its workspace prepare command. */
   environment(ticket: Ticket): Variable[]
+  /**
+   * Resolves the project `ticket` works in when the ticket records none, such as for a ticket accepted before projects
+   * were recorded; the project index supplies it. Without it a ticket's own `project` decides, and none keeps the ticket
+   * in an empty directory.
+   */
+  project?(ticket: Ticket): TicketProject | undefined
   sourceLink(trigger: Trigger, signal?: AbortSignal): Promise<{ source_url?: string; source_url_read?: string }>
   /** Stored Trigger of the message `trigger` replies to, when it replies to one. */
   repliedTo(trigger: Trigger): Trigger | undefined
@@ -108,7 +123,9 @@ export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutco
   const assignment = ticket.mandate.strength === 'inferred' && ruleIds
     ? `Proactively accepted under ${ruleIds.join(', ')}. Scope: ${outcome.scope}.${precedence}${note}`
     : note.trim()
-  return { name, directory: join(executionRoot(settings, stateDir), name), assignment }
+  // Every ticket works under the worktrees root, never the work root that holds the projects themselves: a project
+  // ticket gets a worktree of that project there, a ticket without one an empty directory beside it.
+  return { name, directory: worktreePath(stateDir, name), assignment }
 }
 /** Character limits for inline assignment and trigger text in worker messages; longer text is read via its resource. */
 const ASSIGNMENT_CHARS = 1500, TRIGGER_CHARS = 600
@@ -231,14 +248,20 @@ export class DshExecutor implements Executor {
   private readonly settling = new Map<string, AbortController>()
   /** The stops of tickets' background work that run, by ticket, which a launch or a delivery of the ticket waits for. */
   private readonly stopping = new Map<string, Promise<void>>()
+  /** The cleanups of tickets' directories that run, by ticket, which a launch of the ticket waits for. */
+  private readonly cleaning = new Map<string, Promise<void>>()
   /** The jobs workers left to a person when they handed off, by ticket, and the collecting of their ends. */
   private readonly left = new Map<string, { jobs: Set<string>; collect: AbortController }>()
   /** When a person's message typed into a worker's Session last started a turn, by ticket. */
   private readonly personal = new Map<string, string>()
-  /** The timers of workers that go on after a passing failure, which dispose clears. */
+  /** The timers of workers that go on after a passing failure, and of the worktree sweeps, which dispose clears. */
   private readonly timers = new Set<ReturnType<typeof setTimeout>>()
+  /** The worktrees tickets work in: created before a worker starts, and removed once nothing needs them. */
+  private readonly worktrees: Worktrees
   /** Registers the `launch` and `delivery` effect handlers; both are held (concurrency limit 0) while processing is paused. */
   constructor(private readonly host: ExecutorHost) {
+    this.worktrees = new Worktrees({ stateDir: host.machine.stateDir, run: gitRunner(host.context.subprocess, host.machine.stateDir),
+      log: message => host.context.logger.warn('%s', message) })
     this.slots = new WorkerSlots(() => host.store.tickets.open().filter(ticket => this.running(ticket)).map(ticket => ticket.id),
       () => host.store.settings().executor.maxWorkers)
     // Each launch reserves a worker slot so launches run concurrently while slots are free.
@@ -252,26 +275,48 @@ export class DshExecutor implements Executor {
     return { ...ticket, execution: ticketExecution(ticket, outcome, this.host.store.settings(), this.host.machine.stateDir) }
   }
   /**
-   * Runs the configured `executor.prepare` command for a new ticket workspace in its parent directory with the ticket's
-   * execution environment variables, then verifies the directory as the worker sees it.
-   * A failed prepare command throws `PrepareFailed`, which is not retried automatically; an empty directory it left is removed, a non-empty one kept.
-   * @throws PrepareFailed with the command's output when the prepare command fails.
+   * Prepares the directory a worker starts in: creates the project's worktree when the ticket has a project, runs the
+   * configured prepare command for a directory that does not exist yet, then checks that the directory is this ticket's
+   * to use and that its git configuration is one the agent's git may read.
+   * @throws WorkspaceFailed when the directory holds another worktree or the worktree cannot be created.
+   * @throws PrepareFailed, with the command's output, when the prepare command fails.
    */
   private async prepareDirectory(ticket: Ticket): Promise<void> {
     const directory = ticket.execution?.directory ?? ''
+    const project = this.host.project?.(ticket) ?? ticket.project
     await mkdir(dirname(directory), { recursive: true })
+    const standing = await this.worktrees.standing(directory, project)
+      .catch((error: unknown) => { throw new WorkspaceFailed(`The ticket directory ${directory} could not be inspected: ${String(error)}`) })
+    // A directory that holds another worktree would mix this ticket's changes into that one's, so it is refused rather
+    // than reset: only a path with nothing of its own is ever created over.
+    if (standing.state === 'foreign') throw new WorkspaceFailed(`The ticket directory ${directory} cannot be used: ${standing.why}`)
+    if (standing.state === 'absent') {
+      // With a project the worktree is the workspace: create it here, and fail the ticket rather than fall back to an
+      // empty directory, where the worker would find none of the project's code.
+      if (project) await this.worktrees.create(project, directory)
+      await this.prepareCommand(ticket, directory, project)
+      await mkdir(directory, { recursive: true })
+    }
+    // Checked on every launch, not only when a directory was created: one that merely exists may be another ticket's
+    // worktree, or what a failed attempt left behind.
+    await this.worktrees.verify(directory, project)
+    await verifyDirectory(directory, this.host.context.subprocess, this.host.lifetime)
+  }
+  /**
+   * Runs the configured `executor.prepare` command in the ticket directory's parent with the ticket's execution
+   * environment variables. A failure removes what the attempt left, so a retry prepares the directory again.
+   */
+  private async prepareCommand(ticket: Ticket, directory: string, project?: TicketProject): Promise<void> {
     const command = this.host.store.settings().executor.prepare.trim()
-    const env = Object.fromEntries(this.host.environment(ticket).map(variable => [variable.key, variable.value]))
+    if (!command) return
+    const env = Object.fromEntries(this.host.environment(project ? { ...ticket, project } : ticket).map(variable => [variable.key, variable.value]))
     // Enforce a timeout so a hung prepare command (such as on a credential prompt) fails the ticket instead of holding a worker slot indefinitely.
     const signal = AbortSignal.any([this.host.lifetime, AbortSignal.timeout(PREPARE_TIMEOUT_MS)])
-    if (command) await runAsWorker(this.host.context.subprocess, ['sh', '-c', command], dirname(directory), signal, env)
+    await runAsWorker(this.host.context.subprocess, ['sh', '-c', command], dirname(directory), signal, env)
       .catch(async (error: unknown) => {
-        // Remove an empty directory left by a failed prepare command so a later retry does not treat it as already prepared.
-        await rmdir(directory).catch(() => { /* Absent, or holding what the command wrote, which the output explains. */ })
+        await this.worktrees.remove(directory, project).catch(() => { /* The next sweep reports what is left. */ })
         throw new PrepareFailed(`The prepare command failed: ${error instanceof Error ? error.message : String(error)}`)
       })
-    await mkdir(directory, { recursive: true })
-    await verifyDirectory(directory, this.host.context.subprocess, this.host.lifetime)
   }
   /** Enqueues a `launch` effect for an accepted or resumed assignment; launches start in queue order as worker slots free up. */
   start(ticket: Ticket, assignment: Assignment): void {
@@ -292,7 +337,7 @@ export class DshExecutor implements Executor {
       // would treat whatever a failed prepare command left behind in the directory as a prepared workspace; instead the
       // ticket is marked failed and waits until new human input or an explicit retry arrives.
       if (this.host.closing() || error instanceof Later) throw error
-      if (!(error instanceof PrepareFailed) && this.retries(`launch:${assignmentId}`, error)) throw error
+      if (!(error instanceof PrepareFailed || error instanceof WorkspaceFailed) && this.retries(`launch:${assignmentId}`, error)) throw error
       this.launchFailed(ticketId, assignmentId, error)
     } finally { this.slots.free(ticketId) }
   }
@@ -379,6 +424,9 @@ export class DshExecutor implements Executor {
       // Its shell jobs and subagents stop with it, also those of a worker that ends its own turn.
       this.stopWork(ticket.id, reason)
       this.left.get(ticket.id)?.collect.abort(); this.left.delete(ticket.id); this.personal.delete(ticket.id)
+      // The worktree goes here, outside the ending transaction: `tickets.end` runs inside it and cannot delete files, and
+      // a rollback must leave the worktree the worker still has. A cleanup that fails is logged and keeps nothing waiting.
+      this.clean(ticket.id)
     })
   }
   /** Stop what a ticket's worker runs in the background (see `stopBackground`). */
@@ -396,6 +444,23 @@ export class DshExecutor implements Executor {
   private async stopped(ticketId: string): Promise<void> {
     const stopping = this.stopping.get(ticketId)
     if (stopping) await until(stopping, this.host.lifetime)
+  }
+  /**
+   * Removes the directory of a ticket that ended, unless something about it is worth keeping. It runs after the ending
+   * transaction and is tracked per ticket, so a launch of a resumed ticket waits for it instead of racing it.
+   */
+  private clean(ticketId: string): void {
+    const ticket = this.host.store.tickets.get(ticketId)
+    if (!ticket) return
+    const work = (this.cleaning.get(ticketId) ?? Promise.resolve()).then(() => this.worktrees.release(ticket))
+      .catch((error: unknown) => { this.host.context.logger.warn('dsh-superagent could not clean a ticket\'s worktree: %s', String(error)) })
+    this.cleaning.set(ticketId, work)
+    void work.finally(() => { if (this.cleaning.get(ticketId) === work) this.cleaning.delete(ticketId) })
+  }
+  /** Waits for a cleanup of this ticket's directory that runs, so a launch prepares the directory after it. */
+  private async cleaned(ticketId: string): Promise<void> {
+    const cleaning = this.cleaning.get(ticketId)
+    if (cleaning) await until(cleaning, this.host.lifetime)
   }
   /**
    * On a host stop, for a bounded time: mark the Assignments whose workers were still on them as interrupted and tell their
@@ -478,11 +543,11 @@ export class DshExecutor implements Executor {
     const source = sourceTrigger(this.host, ticket)
     const workspace = ticket.execution?.directory ?? ''
     if (!current()) return
-    // Prepare the workspace directory once; an existing directory counts as already prepared, including worktrees created before `prepare` commands existed.
-    if (!await stat(workspace).then(() => true, () => false)) {
-      await this.prepareDirectory(ticket)
-      if (!current()) return
-    }
+    // A cleanup the ticket's end started finishes first, so the directory is not deleted under this launch.
+    await this.cleaned(ticket.id)
+    if (!current()) return
+    // Prepared on every launch: whether an existing directory may be used is what its identity decides, not its existence.
+    await this.prepareDirectory(ticket)
     if (!current()) return
     const sessionId = workerSessionId(ticket.id)
     const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker')
@@ -581,6 +646,24 @@ export class DshExecutor implements Executor {
       }
       else if (latest?.state === 'pending' && !waitsForPerson(ticket)) this.start(ticket, latest)
     }
+    this.sweep()
+  }
+  /**
+   * Removes the worktrees no open ticket uses, now and every few hours: a ticket's end starts a wait for some of them, so
+   * the sweep has to run again after it, and a process that stays up would otherwise accumulate them.
+   */
+  private sweep(): void {
+    const run = (): void => {
+      if (this.host.closing()) return
+      void this.worktrees.sweep(this.host.store.tickets.list().map(ticket => {
+        const project = this.host.project?.(ticket) ?? ticket.project
+        return project && project !== ticket.project ? { ...ticket, project } : ticket
+      })).catch((error: unknown) => {
+        this.host.context.logger.warn('dsh-superagent could not sweep the worktrees: %s', String(error))
+      })
+      this.after(SWEEP_INTERVAL_MS, run)
+    }
+    run()
   }
   /** Runs background worker event handling and updates the `worker` health entry on failure or recovery. */
   private background(work: Promise<void>): Promise<void> {
