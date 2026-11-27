@@ -113,7 +113,8 @@ it.each(RULES)('%s (%s)', (_rule, file, says, gone = []) => {
 
 it('keeps each role\'s own instructions short', () => {
   expect(masterPrompt.length).toBeLessThan(1400)
-  expect(workerPrompt.length).toBeLessThan(1000)
+  // The worker now also confirms the assignment's project before starting.
+  expect(workerPrompt.length).toBeLessThan(1_200)
 })
 
 const trigger: Trigger = { id: 'request-1', source: 'github', threads: [{ source: 'github', id: '42' }], actor: { source: 'github', id: 'alice' }, human: true,

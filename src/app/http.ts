@@ -7,13 +7,15 @@ import { z } from 'zod'
 import { THREAD_FILTERS, TICKET_FILTERS, type Api, type ApiResponse, type RouteParams } from './api.ts'
 import { sourceSkills } from './context.ts'
 import { executionRoot } from './execution-environment.ts'
-import { emptyProjectState, installProjectIndex, ProjectIndex } from './projects.ts'
+import { emptyProjectState, installProjectIndex, ProjectIndex, type LearnedAliases } from './projects.ts'
 import { commandMissing, installedPlugins, installedProfileDir, profileMcpServers, serverTarget,
   workerMountFailures } from './mcp-servers.ts'
 import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
 import { PromptConflict, SKILL_NAME, SKILL_PREFIX, TEAM_SECTIONS, builtInBase, builtInParts, defaultPrompts, savePrompts, type Prompts }
   from './prompts.ts'
 import { policyVersion } from '../policy.ts'
+import { readLearnedProjects } from '../core/index.ts'
+import { KV } from '../kv.ts'
 import { SettingsConflict, type Settings } from './settings.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
 import { UserError, type EngineForPeople, type Ticket } from '../core/index.ts'
@@ -264,15 +266,24 @@ function match(table: Routes, method: string, segments: string[]) {
   }
   return undefined
 }
+/**
+ * The learned alias layer the project index reads: the phrases people corrected, resolved to the project they named.
+ * @param store - The store whose `KV.projects.learned` record holds them.
+ * @returns The layer, read afresh on every call so a correction lands without a restart.
+ */
+const learnedAliases = (store: Pick<Store, 'get'>): LearnedAliases => ({
+  entries: () => new Map(Object.entries(readLearnedProjects(store.get(KV.projects.learned)).resolved)),
+})
 export function registerHttp(ctx: Context, runtime: HttpHost): () => void {
   if (ctx.webServer.host !== '127.0.0.1') throw new Error('Orchestrator management requires a loopback Web server')
   // The index is created here because startup registers these routes before it waits for anything, which is also where a
   // background scan can start without adding to that wait. A partial host without a state directory gets no index.
-  // TODO(P0 — 项目感知执行): pass the correction store's learned aliases here once it lands; without them the learned layer
-  // stays off and only the manual alias table applies.
   const projects = runtime.machine?.stateDir ? new ProjectIndex({
     stateDir: runtime.machine.stateDir,
     root: () => executionRoot(runtime.store.settings(), runtime.machine.stateDir),
+    // The database is the authority for learned aliases; this reads it on every scan and resolution rebuild, so a correction
+    // is in effect at once and a hand-edited file cannot drift from it.
+    learned: learnedAliases(runtime.store),
     logger: message => ctx.logger.warn('dsh-superagent: %s', message),
   }) : undefined
   if (projects) { installProjectIndex(ctx, projects); projects.start() }

@@ -34,8 +34,11 @@ import { overview } from '../src/app/views/overview.ts'
 import { preview, readable } from '../src/app/views/text.ts'
 import { decisionList, search, threadDetail, threadList } from '../src/app/views/threads.ts'
 import { executorLoad, ticketDetail, ticketList } from '../src/app/views/tickets.ts'
+import { installProjectIndex, ProjectIndex } from '../src/app/projects.ts'
+import { Worktrees } from '../src/executor/worktrees.ts'
 
 let runtime: Runtime
+let context: Context
 const viewsOf = (value: Runtime) => ({ store: value.store, sources: value.sources, links: value.links() })
 const overviewOf = (value: Runtime) => overview(viewsOf(value), value.health, policyVersion(value.store.settings()), executorLoad(value.store, value.executor.activeCount()), value.setupProblem ?? value.feishuProblem)
 let directory: string
@@ -160,6 +163,7 @@ beforeEach(async () => {
     [SCOPED]: `global\0credential.helper\n\0global\0credential.https://github.com.helper\n${credentialHelper(AGENT())}\0`,
   }
   const ctx = new Context()
+  context = ctx
   agents = new Map()
   tools = new Map()
   sections = new Map()
@@ -2072,4 +2076,123 @@ it('keeps the Policy the main Session judges by in its prompt, after admission a
   await runtime.settings.save('policy', { ...saved.policy, rules: rules.map(rule => ({ ...rule, enabled: false })) }, runtime.store.blockRevision('policy'), 'panel')
   expect(policy()).toContain('No rule is enabled: a proactive candidate can only be ignored.')
   expect(policy()).toContain('The accept mode and the rules decide proactive candidates only')
+})
+
+describe('project-scoped execution wiring', { timeout: 30_000 }, () => {
+  const root = () => join(directory, 'work')
+  const projectPath = () => join(root(), 'widgets')
+  /** Writes the index snapshot the Runtime's installed index loads, then installs it on the test context. */
+  const index = (projects: { name: string; aliases?: string[] }[] = [{ name: 'widgets', aliases: ['小部件'] }]) => {
+    const generatedAt = new Date().toISOString()
+    writeFileSync(join(directory, 'projects.json'), JSON.stringify({ generatedAt, root: root(), skipped: [],
+      projects: projects.map(project => ({ name: project.name, path: projectPath(), commonDir: join(projectPath(), '.git'),
+        head: 'head-1', branch: 'master', ...project.aliases ? { aliases: project.aliases } : {} })) }))
+    // The resolver reads the hand-maintained alias table, not the aliases the snapshot repeats for display.
+    writeFileSync(join(directory, 'projects-aliases.json'), JSON.stringify(Object.fromEntries(
+      projects.flatMap(project => (project.aliases ?? []).map(alias => [alias, project.name])))))
+    installProjectIndex(context, new ProjectIndex({ stateDir: directory, root }))
+  }
+  /** The git answers a worktree of the indexed project needs, so its launch succeeds. */
+  const gitAnswers = (target: string) => {
+    answers[`git -C ${projectPath()} worktree prune`] = ''
+    answers[`git -C ${projectPath()} rev-parse HEAD`] = 'head-1\n'
+    answers[`git -C ${projectPath()} worktree add --detach ${target} head-1`] = ''
+    answers[`git -C ${target} rev-parse --show-toplevel`] = `${target}\n`
+    answers[`git -C ${target} rev-parse --git-common-dir`] = `${join(projectPath(), '.git')}\n`
+  }
+
+  it('records the project an accept names, with the basis code computed from the message', async () => {
+    index()
+    const trigger = feishu('31', '@bot 小部件 里的按钮文案改一下')
+    await receive(trigger)
+    const result = await route({ kind: 'accept', trigger_id: trigger.id, title: '改按钮文案',
+      worktree_name: 'rename-button', acknowledgement: '收到。', project: 'widgets' })
+    const ticket = runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!
+    expect(ticket.project).toMatchObject({ name: 'widgets', path: projectPath(), commonDir: join(projectPath(), '.git'), basis: 'named' })
+    // Persisted, not only returned: the record is what the panel and the next launch read.
+    expect(runtime.store.tickets.get(ticket.id)!.project).toMatchObject({ name: 'widgets', basis: 'named' })
+  })
+
+  it('records the project the assessment names through orchestrator_eval_decide too', async () => {
+    index()
+    runtime.store.saveSettings({ ...runtime.store.settings(), eval: { ...runtime.store.settings().eval, mode: 'auto' } })
+    const trigger = feishu('32', '小部件 的图标颜色不对', { mentions: [] })
+    await receive(trigger)
+    await runTool(runtime.masterId, 'orchestrator_eval', { trigger_id: trigger.id })
+    const accepted = await runTool(runtime.masterId, 'orchestrator_eval_decide', { trigger_id: trigger.id, decision: 'accept', title: '图标颜色',
+      worktree_name: 'icon-color', scope: 'bug', reason: 'reported defect', intent_evidence: 'quoted', project: 'widgets',
+      rule_assessments: [{ rule_id: 'copy', matched: true, reason: 'copy' }, { rule_id: 'visual', matched: true, reason: 'visual' }],
+      direction: { implementation_requested: true, target_basis: 'specified', requires_design_decision: false, evidence: 'quoted' } }) as { ticket: { ticket_id: string } }
+    expect(runtime.store.tickets.get(accepted.ticket.ticket_id)!.project).toMatchObject({ name: 'widgets', basis: 'named' })
+  })
+
+  it('leaves the project empty when the index does not hold the name, without refusing the accept', async () => {
+    index()
+    const trigger = feishu('33', '@bot 改一下按钮文案')
+    await receive(trigger)
+    const result = await route({ kind: 'accept', trigger_id: trigger.id, title: '改按钮文案', worktree_name: 'rename-copy',
+      acknowledgement: '收到。', project: '没有这个项目' })
+    const ticket = runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!
+    expect(result.refused).toBeUndefined()
+    expect(ticket.project).toBeUndefined()
+  })
+
+  it('writes the project and the branch convention into the assignment the worker reads', async () => {
+    index()
+    const trigger = feishu('34', '@bot 小部件 里的按钮文案改一下')
+    await receive(trigger)
+    const result = await route({ kind: 'accept', trigger_id: trigger.id, title: '改按钮文案', worktree_name: 'rename-copy',
+      acknowledgement: '收到。', project: 'widgets' })
+    const ticket = runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!
+    // The assignment text is what the worker reads under ticket/<id>/assignment and what the launch caps at 1500 characters.
+    const assignment = ticket.execution!.assignment
+    expect(assignment).toContain('Project: widgets at ' + projectPath())
+    expect(assignment).toContain(ticket.execution!.directory)
+    expect(assignment).toContain('git switch -c agent/$DSH_SUPERAGENT_NAME 2>/dev/null || git switch agent/$DSH_SUPERAGENT_NAME')
+    // A cut at the inline limit still keeps them: they come first.
+    expect(assignment.indexOf('Project:')).toBeLessThan(assignment.indexOf('git switch'))
+    // An existing branch is the normal case, not an error, and the PR comes from it.
+    expect(assignment).toContain('the pull request comes from it')
+  })
+
+  it('never resolves a project for a ticket whose directory was frozen in the old work root', async () => {
+    index()
+    const trigger = feishu('35', '@bot 改一下按钮文案')
+    await receive(trigger)
+    const result = await route({ kind: 'accept', trigger_id: trigger.id, title: '改按钮文案', worktree_name: 'rename-copy',
+      acknowledgement: '收到。' })
+    const ticket = runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!
+    await runtime.idle()
+    // A ticket recorded before the move: its directory is under the old work root, outside the worktrees root, and its request
+    // does name an alias. Resolving one now would build a worktree at that frozen path, which the cleanup below the worktrees
+    // root never removes.
+    runtime.store.triggers.save({ ...trigger, text: '小部件 里的按钮文案改一下' })
+    const legacy = { ...ticket, project: undefined, execution: { ...ticket.execution!, directory: join(directory, 'work', 'legacy-copy') },
+      // Nothing in it has launched in this record, as a migrated Ticket reads before its first start on this host.
+      assignments: ticket.assignments.map(({ startedAt: _startedAt, ...rest }) => rest) }
+    // A fresh Assignment that has not launched yet: only the frozen path can stop a resolution on its first launch.
+    const pending = { id: 'assignment-legacy', state: 'pending' as const, createdAt: new Date().toISOString() }
+    runtime.store.tickets.save({ ...legacy, assignments: [...legacy.assignments, pending] })
+    subprocess.spawn.mockClear()
+    runtime.executor.start(runtime.store.tickets.get(ticket.id)!, pending)
+    await runtime.idle()
+    // No worktree of the project the message's alias names, in the old path or anywhere else.
+    // The project the alias names is never touched: no worktree command runs in it, at the frozen path or anywhere else.
+    expect(subprocess.spawn.mock.calls.map(([spec]) => (spec as { argv: string[] }).argv.join(' '))
+      .filter(argv => argv.includes(projectPath()))).toEqual([])
+    expect(runtime.store.tickets.get(ticket.id)!.project).toBeUndefined()
+  })
+
+  it('hands the sweep a reader of the store, so a ticket a person resumed meanwhile keeps its worktree', async () => {
+    const { ticket } = await acceptedTicket()
+    await runtime.idle()
+    const spy = vi.spyOn(Worktrees.prototype, 'sweep')
+    runtime.executor.resume()
+    expect(spy).toHaveBeenCalled()
+    const current = spy.mock.calls.at(-1)![2] as ((id: string) => { ended?: unknown } | undefined) | undefined
+    expect(typeof current).toBe('function')
+    // The reader sees the store as it is now, not the list the sweep started from.
+    runtime.store.tickets.save({ ...runtime.store.tickets.get(ticket.id)!, ended: undefined })
+    expect(current!(ticket.id)?.ended).toBeUndefined()
+  })
 })

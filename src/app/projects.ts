@@ -131,6 +131,20 @@ export function installProjectIndex(context: object, index: ProjectIndex): void 
  */
 export function currentProjectIndex(context: object): ProjectIndex | undefined { return indexes.get(context) }
 
+/**
+ * Resolve a request's project: the one place a name or an alias becomes a project, for the two accept paths and the
+ * Executor alike. The basis is code's own conclusion, never a model's claim, and anything that is not exactly one answer
+ * stays empty rather than guessed.
+ * @param context - The context whose project index to read.
+ * @param nameOrAlias - The project name or alias an accept supplied, if any; never a path.
+ * @param sourceText - The request's own words, which must contain the name or alias for a `named` basis.
+ * @returns The one project with the basis code computed, or `undefined` when the index is missing, nothing matched, or more
+ * than one thing did.
+ */
+export function resolveProject(context: object, nameOrAlias: string | undefined, sourceText: string): ResolvedProject | undefined {
+  return currentProjectIndex(context)?.resolve(nameOrAlias, sourceText)
+}
+
 const runGit = (cwd: string, args: readonly string[], signal: AbortSignal): Promise<string> => new Promise((resolve, reject) => {
   execFile('git', [...args], { cwd, encoding: 'utf8', timeout: GIT_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, signal },
     (error, stdout, stderr) => {

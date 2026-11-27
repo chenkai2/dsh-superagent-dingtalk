@@ -113,19 +113,29 @@ export function mandateInstructions(mandate: Pick<Mandate, 'strength'>): string 
 export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>, settings: Settings,
   stateDir: string): Execution {
   const name = ticketWorktreeName(outcome.name ?? '', ticket.id)
+  const directory = worktreePath(stateDir, name)
   const source = ticket.origin.triggerId
   const note = outcome.note ? `\nRouting note (not the source request): ${outcome.note}` : ''
   const ruleIds = ticket.mandate.basis.rules
   const rules = settings.policy.rules.filter(rule => ruleIds?.includes(rule.id))
     .map(rule => `\n- ${rule.name} (${rule.id}): ${rule.instruction}`).join('')
   const precedence = rules ? `\nMatched rules; their procedure and communication instructions take precedence over the default acknowledgement and messaging policy for this ticket:${rules}` : ''
-  // The origin trigger is delivered alongside the assignment, so `assignment` omits the trigger text.
-  const assignment = ticket.mandate.strength === 'inferred' && ruleIds
+  // The origin trigger is delivered alongside the assignment, so `assignment` omits the trigger text. Where the work goes and
+  // the branch it must come from come first: a message cut at the inline limit would otherwise lose them, and a worker that
+  // forgets the branch reports ready with its commits left in a detached worktree.
+  // A Ticket without a Project works as it always did: an empty directory its worker may fill, and no worktree to bind.
+  const project = ticket.project
+    ? `Project: ${ticket.project.name} at ${ticket.project.path}. Work in this ticket's worktree at ${directory}; never edit the project's main copy.\n`
+      + 'Before your first commit run: git switch -c agent/$DSH_SUPERAGENT_NAME 2>/dev/null || git switch agent/$DSH_SUPERAGENT_NAME'
+      + ' — an existing branch is normal (retry, resume, rebuilt worktree); the pull request comes from it.\n'
+    : ''
+  const rest = ticket.mandate.strength === 'inferred' && ruleIds
     ? `Proactively accepted under ${ruleIds.join(', ')}. Scope: ${outcome.scope}.${precedence}${note}`
     : note.trim()
+  const assignment = `${project}${rest}`.trim()
   // Every ticket works under the worktrees root, never the work root that holds the projects themselves: a project
   // ticket gets a worktree of that project there, a ticket without one an empty directory beside it.
-  return { name, directory: worktreePath(stateDir, name), assignment }
+  return { name, directory, assignment }
 }
 /** Character limits for inline assignment and trigger text in worker messages; longer text is read via its resource. */
 const ASSIGNMENT_CHARS = 1500, TRIGGER_CHARS = 600
@@ -283,7 +293,11 @@ export class DshExecutor implements Executor {
    */
   private async prepareDirectory(ticket: Ticket): Promise<void> {
     const directory = ticket.execution?.directory ?? ''
-    const project = this.host.project?.(ticket) ?? ticket.project
+    // A Ticket whose directory was frozen before worktrees moved keeps it, and no project is resolved for it: a worktree
+    // built at that path would sit in the old work root, which the cleanup below the worktrees root never touches. Nor is one
+    // resolved once the Ticket has launched, because the directory then holds whatever its worker put there.
+    const resolvable = this.worktrees.owns(directory) && !ticket.assignments.some(assignment => assignment.startedAt)
+    const project = ticket.project ?? (resolvable ? this.host.project?.(ticket) : undefined)
     await mkdir(dirname(directory), { recursive: true })
     const standing = await this.worktrees.standing(directory, project)
       .catch((error: unknown) => { throw new WorkspaceFailed(`The ticket directory ${directory} could not be inspected: ${String(error)}`) })
@@ -655,10 +669,14 @@ export class DshExecutor implements Executor {
   private sweep(): void {
     const run = (): void => {
       if (this.host.closing()) return
+      // The reader re-reads the store: the list below is a snapshot, and a ticket a person resumed after it was taken must
+      // keep its worktree.
       void this.worktrees.sweep(this.host.store.tickets.list().map(ticket => {
-        const project = this.host.project?.(ticket) ?? ticket.project
+        const directory = ticket.execution?.directory
+        // The same rule as a launch: a frozen directory is never given a project, so the sweep cannot be told one either.
+        const project = ticket.project ?? (directory && this.worktrees.owns(directory) ? this.host.project?.(ticket) : undefined)
         return project && project !== ticket.project ? { ...ticket, project } : ticket
-      })).catch((error: unknown) => {
+      }), undefined, id => this.host.store.tickets.get(id)).catch((error: unknown) => {
         this.host.context.logger.warn('dsh-superagent could not sweep the worktrees: %s', String(error))
       })
       this.after(SWEEP_INTERVAL_MS, run)
