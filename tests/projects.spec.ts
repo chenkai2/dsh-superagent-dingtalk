@@ -1,9 +1,9 @@
 /** The project index and its resolver: the facts a scan records, and how a name or an alias becomes one project. */
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PROJECTS_ALIASES, PROJECTS_FILE, ProjectIndex } from '../src/app/projects.ts'
 import { startRuntime, type Host } from './fixtures/host.ts'
 
@@ -70,6 +70,51 @@ describe('project index', () => {
     expect(file.skipped).toHaveLength(2)
   }, 30_000)
 
+  it('normalizes every checkout to its real path, so a symlinked root cannot change an entry', async () => {
+    const base = scratch(), stateDir = scratch()
+    const realRoot = join(base, 'real-root')
+    const alpha = repository(join(realRoot, 'alpha'))
+    const linkedRoot = join(base, 'linked-root')
+    symlinkSync(realRoot, linkedRoot)
+    const index = indexFor(linkedRoot, stateDir)
+
+    const state = await index.refresh()
+
+    expect(state.count).toBe(1)
+    const entry = index.list('alpha')[0]!
+    expect(entry.path).toBe(realpathSync(alpha))
+    expect(entry.path).not.toBe(join(linkedRoot, 'alpha'))
+  }, 30_000)
+
+  it('keeps the previous snapshot when its execution root disappears', async () => {
+    const parent = scratch(), stateDir = scratch()
+    const root = join(parent, 'work')
+    repository(join(root, 'alpha'))
+    const index = indexFor(root, stateDir)
+    const first = await index.refresh()
+
+    rmSync(root, { recursive: true, force: true })
+    const state = await index.refresh()
+
+    expect(state.problem).toContain('does not exist')
+    expect(state.count).toBe(1)
+    expect(state.generatedAt).toBe(first.generatedAt)
+    const file = JSON.parse(readFileSync(join(stateDir, PROJECTS_FILE), 'utf8')) as { projects: unknown[] }
+    expect(file.projects).toHaveLength(1)
+  }, 30_000)
+
+  it('drops invalid entries from a persisted index instead of failing the tools', async () => {
+    const stateDir = scratch()
+    const entry = { name: 'good', path: '/root/good', commonDir: '/root/good/.git', head: 'a'.repeat(40), branch: 'main' }
+    writeFileSync(join(stateDir, PROJECTS_FILE), JSON.stringify({ generatedAt: '2026-01-01T00:00:00.000Z', root: '/root',
+      projects: [entry, { name: 42 }], skipped: [{ path: '/root/bare', why: 'bare repository' }, { path: 1 }] }))
+    const index = indexFor('/root', stateDir)
+
+    expect(index.list('')).toHaveLength(1)
+    expect(index.state().problem).toContain('invalid')
+    expect(index.state().skipped).toEqual([{ path: '/root/bare', why: 'bare repository' }])
+  })
+
   it('skips a submodule rather than indexing the checkout inside it', async () => {
     const base = scratch(), stateDir = scratch()
     const origin = repository(join(base, 'origin'))
@@ -86,6 +131,47 @@ describe('project index', () => {
     expect(state.skipped).toHaveLength(1)
     expect(state.skipped[0]?.path).toBe(realpathSync(join(parent, 'mods', 'sub')))
     expect(state.skipped[0]?.why).toContain('submodule')
+  }, 30_000)
+
+  it('answers a refresh request before the scan finishes', async () => {
+    const root = scratch(), stateDir = scratch()
+    repository(join(root, 'alpha'))
+    const index = indexFor(root, stateDir)
+
+    const started = index.requestRefresh()
+
+    expect(started).toMatchObject({ generating: true, generatedAt: null, count: 0, projects: [] })
+    // The in-flight scan is joined, not restarted, and its result replaces the state when it lands.
+    await index.refresh()
+    expect(index.state()).toMatchObject({ generating: false, count: 1 })
+  }, 30_000)
+
+  it('logs one learned-alias failure across loading the file and scanning', async () => {
+    const root = scratch(), stateDir = scratch()
+    repository(join(root, 'alpha'))
+    await indexFor(root, stateDir).refresh()
+    const logger = vi.fn()
+    const index = new ProjectIndex({ stateDir, root: () => root, logger,
+      learned: { entries: () => { throw new Error('boom') } } })
+
+    await index.refresh()
+
+    expect(logger).toHaveBeenCalledTimes(1)
+    expect(String(logger.mock.calls[0]?.[0])).toContain('learned project aliases')
+  }, 30_000)
+
+  it('reuses the remote and commit time of a repository whose common directory and HEAD did not move', async () => {
+    const root = scratch(), stateDir = scratch()
+    const alpha = repository(join(root, 'alpha'))
+    git(alpha, 'remote', 'add', 'origin', 'https://example.com/first.git')
+    const index = indexFor(root, stateDir)
+    await index.refresh()
+
+    // Only the remote URL changes; HEAD and the common directory do not, so a hot scan keeps the recorded facts.
+    git(alpha, 'remote', 'set-url', 'origin', 'https://example.com/second.git')
+    await index.refresh()
+
+    expect(index.list('alpha')[0]?.remote).toBe('https://example.com/first.git')
   }, 30_000)
 
   it('records the difference from the previous snapshot', async () => {
@@ -170,6 +256,8 @@ describe('project resolution', () => {
     // text mentions it, and the ambiguity is not silently resolved in either direction.
     expect(index.resolve(undefined, '阿尔法要改')).toBeUndefined()
     expect(index.resolve('阿尔法', '阿尔法要改')).toBeUndefined()
+    // An ambiguous mention does not disappear because another, unique alias is also in the text.
+    expect(index.resolve(undefined, '阿尔法和伽马都要改')).toBeUndefined()
   }, 30_000)
 })
 
@@ -191,15 +279,20 @@ describe('project index over HTTP and the main Session tool', () => {
 
     const refreshed = await h.api('POST', 'projects/refresh')
     expect(refreshed.status).toBe(200)
-    expect(refreshed.body).toMatchObject({ root: work, count: 1, generating: false, skipped: [], diff: { added: ['demo'], removed: [] },
-      projects: [expect.objectContaining({ name: 'demo', path: realpathSync(demo) })] })
-
-    const status = await h.api('GET', 'projects')
-    expect(status.body).toMatchObject({ root: work, count: 1, generatedAt: expect.any(String), skipped: [], problem: null })
+    // The request answers from the previous snapshot at once; the scan runs behind it.
+    expect(refreshed.body).toMatchObject({ generating: true, count: 0, projects: [] })
+    let status: { status: number; body: Record<string, unknown> } | undefined
+    for (let attempt = 0; attempt < 300; attempt++) {
+      status = await h.api('GET', 'projects')
+      if (status.body.generating === false) break
+      await new Promise<void>(resolve => setTimeout(resolve, 10))
+    }
+    expect(status!.body).toMatchObject({ root: work, count: 1, generatedAt: expect.any(String), skipped: [], problem: null,
+      diff: { added: ['demo'], removed: [] }, projects: [expect.objectContaining({ name: 'demo', path: realpathSync(demo) })] })
 
     const listed = await h.runTool(h.runtime.masterId, 'orchestrator_projects', { keyword: '演示' }) as {
       root: string; projects: { name: string; path: string; commonDir: string; aliases?: string[]; matched: string[] }[] }
-    expect(listed.root).toBe(work)
+    expect(listed).toMatchObject({ root: work, generating: false })
     expect(listed.projects).toHaveLength(1)
     expect(listed.projects[0]).toMatchObject({ name: 'demo', path: realpathSync(demo), commonDir: realpathSync(join(demo, '.git')),
       aliases: ['演示'] })

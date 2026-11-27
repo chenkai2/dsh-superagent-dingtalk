@@ -177,7 +177,7 @@ function routes(runtime: HttpHost, projects: ProjectIndex | undefined): Routes {
   const promptBody = (input: { body: (maxBytes?: number) => Promise<unknown> }) => input.body(4 * runtime.machine.promptMaxChars.get() + 4096)
   return {
     'GET projects': () => projects?.state() ?? emptyProjectState(runtime.machine?.stateDir ?? ''),
-    'POST projects/refresh': async () => projects ? await projects.refresh() : emptyProjectState(runtime.machine?.stateDir ?? ''),
+    'POST projects/refresh': () => projects?.requestRefresh() ?? emptyProjectState(runtime.machine?.stateDir ?? ''),
     'GET state': () => stateView(runtime),
     'GET overview': () => overview(views(runtime), runtime.health, policyVersion(store.settings()),
       executorLoad(store, runtime.executor.activeCount()), runtime.setupProblem ?? runtime.feishuProblem),
@@ -268,6 +268,8 @@ export function registerHttp(ctx: Context, runtime: HttpHost): () => void {
   if (ctx.webServer.host !== '127.0.0.1') throw new Error('Orchestrator management requires a loopback Web server')
   // The index is created here because startup registers these routes before it waits for anything, which is also where a
   // background scan can start without adding to that wait. A partial host without a state directory gets no index.
+  // TODO(P0): pass the correction store's learned aliases here once that store is wired; without them the learned layer
+  // stays off and only the manual alias table applies.
   const projects = runtime.machine?.stateDir ? new ProjectIndex({
     stateDir: runtime.machine.stateDir,
     root: () => executionRoot(runtime.store.settings(), runtime.machine.stateDir),

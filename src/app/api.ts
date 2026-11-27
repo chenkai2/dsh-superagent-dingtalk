@@ -24,7 +24,7 @@ import type { SourceCheck } from '../sources/kind.ts'
 export interface Api {
   /** The project index's last snapshot, its skipped checkouts, its problem, and its difference from the one before. */
   'GET projects': { response: ProjectIndexState }
-  /** Rescan the execution root now; joins a scan already running. */
+  /** Start a rescan and answer at once with `generating: true`; poll `GET projects` for the new snapshot. */
   'POST projects/refresh': { response: ProjectIndexState }
   'GET state': { response: StateView }
   'GET overview': { response: OverviewView }

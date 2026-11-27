@@ -176,7 +176,8 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
         const index = currentProjectIndex(host.context)
         if (!index) return { generatedAt: null, root: '', problem: 'Project index is not available in this process', projects: [] }
         const state = index.state()
-        return { generatedAt: state.generatedAt, root: state.root, ...state.problem ? { problem: state.problem } : {},
+        return { generatedAt: state.generatedAt, root: state.root, generating: state.generating,
+          ...state.problem ? { problem: state.problem } : {},
           projects: index.list(keyword ?? '').map(({ name, path, remote, commonDir, aliases, matched }) => ({ name, path,
             ...remote ? { remote } : {}, commonDir, ...aliases ? { aliases } : {}, matched })) }
       },

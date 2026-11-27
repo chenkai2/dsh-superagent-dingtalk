@@ -15,7 +15,7 @@ export const PROJECTS_FILE = 'projects.json'
 /** The human-maintained alias table read beside the index; it is an input and is never written here. */
 export const PROJECTS_ALIASES = 'projects-aliases.json'
 /** How many checkouts are probed at once. Each probe runs several git calls, so the limit bounds spawned processes. */
-const PROBE_CONCURRENCY = 6
+const PROBE_CONCURRENCY = 8
 /** One git call is given this long before the checkout is recorded as skipped. */
 const GIT_TIMEOUT_MS = 20_000
 
@@ -41,7 +41,11 @@ export interface IndexedProject {
   checkouts?: string[]
 }
 /** A checkout the scan did not index, with the fact that excluded it. */
-export interface SkippedEntry { path: string; why: string }
+export interface SkippedEntry {
+  path: string
+  /** The reason; a git failure carries git's own stderr, which follows the machine's locale and is not stable text. */
+  why: string
+}
 /** What one successful scan knows: the file's content plus the lookups resolution needs. */
 interface Snapshot {
   generatedAt: string
@@ -107,8 +111,8 @@ export interface ProjectIndexOptions {
   /** The clock, replaceable in tests. */
   now?: () => Date
 }
-/** The facts one checkout's git calls returned. */
-interface Facts { path: string; commonDir: string; toplevel: string; head: string; branch: string }
+/** The facts one checkout's git calls returned. Its toplevel is `path`: the candidate is the checkout root. */
+interface Facts { path: string; commonDir: string; head: string; branch: string }
 /** The result of probing one directory: facts, or why it is skipped. */
 type Probe = { facts: Facts } | { why: string }
 
@@ -154,6 +158,21 @@ async function remoteOf(path: string, signal: AbortSignal): Promise<string | und
 /** How many path segments a checkout has: the shallowest checkout is the fallback representative. */
 const depth = (path: string): number => path.split(sep).length
 
+/** Run `run` over `items` with at most `limit` in flight, keeping the input order. */
+async function mapLimit<T, R>(items: readonly T[], limit: number, run: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+  let next = 0
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const at = next++
+      if (at >= items.length) return
+      results[at] = await run(items[at]!)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()))
+  return results
+}
+
 /**
  * Read one directory's git facts. Bare repositories and submodules are refused by their own flags, because neither is a
  * checkout this index can hand to a worker.
@@ -162,21 +181,34 @@ const depth = (path: string): number => path.split(sep).length
  * @returns The facts, or the reason the checkout is skipped.
  */
 async function probe(dir: string, signal: AbortSignal): Promise<Probe> {
-  const first = await runGit(dir, ['rev-parse', '--path-format=absolute', '--git-common-dir', '--is-bare-repository'], signal)
-  const commonDir = line(first)
+  // `--abbrev-ref` applies only to the trailing HEAD, so this one call answers every reference fact except the commit SHA.
+  // `--show-toplevel` is left out on purpose: it fails inside a bare repository, while a candidate's toplevel is its own
+  // real path. Output is commonDir, bare, the superproject only for a submodule, then branch.
+  let output: string
+  try {
+    output = await runGit(dir, ['rev-parse', '--path-format=absolute', '--git-common-dir', '--is-bare-repository',
+      '--show-superproject-working-tree', '--abbrev-ref', 'HEAD'], signal)
+  } catch (error) {
+    // A bare repository reached through a `.git` link fails the HEAD argument before the flags are read; ask for the one
+    // fact that names it, and let any other failure keep its own message.
+    const flag = await runGit(dir, ['rev-parse', '--path-format=absolute', '--git-common-dir', '--is-bare-repository'], signal)
+      .catch(() => undefined)
+    if (flag !== undefined && second(flag) === 'true') return { why: 'bare repository (no working tree)' }
+    throw error
+  }
+  const lines = output.split('\n').map(item => item.trim()).filter(Boolean)
+  const commonDir = lines[0]
   if (!commonDir) return { why: 'git rev-parse returned no common directory' }
-  // A bare repository answers with `.` and a branch name like any checkout, so only this flag tells it apart.
-  if (second(first) === 'true') return { why: 'bare repository (no working tree)' }
+  // A bare repository answers like any checkout; only this flag tells it apart, and it has no working tree to hand out.
+  if (lines[1] === 'true') return { why: 'bare repository (no working tree)' }
+  const branch = lines.at(-1) ?? ''
   // A submodule's common directory is the parent's `.git/modules/<name>`, so deduplication cannot fold it into the parent.
-  const superproject = (await runGit(dir, ['rev-parse', '--show-superproject-working-tree'], signal)).trim()
+  const superproject = lines.length > 3 ? lines[2] ?? '' : ''
   if (superproject) return { why: `submodule of ${real(superproject)}` }
-  const toplevel = line(await runGit(dir, ['rev-parse', '--show-toplevel'], signal))
-  // `--abbrev-ref` applies to every revision after it, so the branch and the commit take separate calls.
-  const branch = line(await runGit(dir, ['rev-parse', '--abbrev-ref', 'HEAD'], signal))
   let head: string
   try { head = line(await runGit(dir, ['rev-parse', '--verify', 'HEAD'], signal)) }
   catch { return { why: 'no commit: HEAD is unborn' } }
-  return { facts: { path: real(dir), commonDir: real(commonDir), toplevel: real(toplevel), head, branch } }
+  return { facts: { path: real(dir), commonDir: real(commonDir), head, branch } }
 }
 
 /** Read the directories one level under `root` that carry a `.git` entry (a directory or a worktree's file). */
@@ -189,6 +221,23 @@ function candidates(root: string): string[] {
   }
   return entries.filter(entry => entry.isDirectory() || entry.isSymbolicLink()).map(entry => join(root, entry.name))
     .filter(path => { try { return statSync(path).isDirectory() && existsSync(join(path, '.git')) } catch { return false } })
+}
+/** Whether a persisted value is one project entry the index can serve. */
+function validProject(value: unknown): value is IndexedProject {
+  if (typeof value !== 'object' || value === null) return false
+  const entry = value as Record<string, unknown>
+  if (typeof entry.name !== 'string' || typeof entry.path !== 'string' || typeof entry.commonDir !== 'string'
+    || typeof entry.head !== 'string' || typeof entry.branch !== 'string') return false
+  if (entry.remote !== undefined && typeof entry.remote !== 'string') return false
+  if (entry.committedAt !== undefined && typeof entry.committedAt !== 'string') return false
+  if (entry.aliases !== undefined && (!Array.isArray(entry.aliases) || !entry.aliases.every(alias => typeof alias === 'string'))) return false
+  return entry.checkouts === undefined
+    || (Array.isArray(entry.checkouts) && entry.checkouts.every(checkout => typeof checkout === 'string'))
+}
+/** Whether a persisted value is one skipped entry the panel can show. */
+function validSkipped(value: unknown): value is SkippedEntry {
+  return typeof value === 'object' && value !== null && typeof (value as Record<string, unknown>).path === 'string'
+    && typeof (value as Record<string, unknown>).why === 'string'
 }
 /** The aliases a human maintained: strings, or entries that record where a correction came from. */
 function manualAliases(stateDir: string): { aliases: [string, string][]; problem?: string } {
@@ -243,6 +292,7 @@ export class ProjectIndex {
   private scanProblem: string | undefined
   private writeProblem: string | undefined
   private aliasProblem: string | undefined
+  private learnedError: string | undefined
   private pending: Promise<ProjectIndexState> | undefined
   private generating = false
   private started = false
@@ -265,6 +315,15 @@ export class ProjectIndex {
   }
   /** Stop scanning; a scan in flight aborts its git calls and does not overwrite the file. */
   stop(): void { this.closed = true; this.abort.abort() }
+
+  /**
+   * Start a scan without waiting for it, so a management request answers at once and the caller polls `state()`.
+   * @returns The state the scan starts from, with `generating: true`; the previous snapshot stays readable meanwhile.
+   */
+  requestRefresh(): ProjectIndexState {
+    void this.refresh()
+    return this.state()
+  }
 
   /**
    * Scan the root and write the index file; a call made while a scan runs joins that scan.
@@ -364,14 +423,19 @@ export class ProjectIndex {
     const file = parsed as Partial<Snapshot>
     if (typeof file.generatedAt !== 'string' || typeof file.root !== 'string' || !Array.isArray(file.projects)
       || !Array.isArray(file.skipped)) return
-    this.snapshot = { generatedAt: file.generatedAt, root: file.root, projects: file.projects, skipped: file.skipped }
-    this.writeProblem = undefined
+    const projects = file.projects.filter(validProject)
+    const skipped = file.skipped.filter(validSkipped)
+    const dropped = file.projects.length - projects.length + file.skipped.length - skipped.length
+    this.snapshot = { generatedAt: file.generatedAt, root: file.root, projects, skipped }
+    this.writeProblem = dropped ? `${PROJECTS_FILE} held ${dropped} invalid entries; they were dropped` : undefined
     this.hint()
   }
 
   /** Scan the root: probe its checkouts, group them by common directory, and keep one entry per group. */
   private async scan(): Promise<Snapshot> {
     const root = this.options.root()
+    if (!existsSync(root) && this.snapshot?.root === root && this.snapshot.projects.length)
+      throw new Error(`the execution root ${root} does not exist; keeping the previous snapshot`)
     const signal = this.abort.signal
     const directories = candidates(root)
     const skipped: SkippedEntry[] = []
@@ -389,19 +453,23 @@ export class ProjectIndex {
     }
     const groups = new Map<string, Facts[]>()
     for (const item of facts) groups.set(item.commonDir, [...groups.get(item.commonDir) ?? [], item])
-    const projects: IndexedProject[] = []
-    for (const group of groups.values()) {
+    // A repository whose common directory and HEAD did not move keeps the facts a HEAD cannot change, so a hot scan
+    // only probes checkouts instead of asking every repository for its remote and last commit time again.
+    const unchanged = new Map<string, IndexedProject>()
+    for (const project of this.snapshot?.projects ?? []) unchanged.set(`${project.commonDir}\0${project.head}`, project)
+    const projects = await mapLimit([...groups.values()], PROBE_CONCURRENCY, async group => {
       const representative = await this.representative(group, signal)
-      const remote = await remoteOf(representative.path, signal)
+      const previous = unchanged.get(`${representative.commonDir}\0${representative.head}`)
+      const remote = previous ? previous.remote : await remoteOf(representative.path, signal)
+      const lastCommit = previous ? previous.committedAt : await committedAt(representative.path, signal)
       const others = group.filter(item => item.path !== representative.path).map(item => item.path).sort()
-      const lastCommit = await committedAt(representative.path, signal)
-      projects.push({
+      return {
         name: basename(representative.path), path: representative.path, commonDir: representative.commonDir,
         ...remote ? { remote } : {}, head: representative.head, branch: representative.branch,
         ...lastCommit ? { committedAt: lastCommit } : {},
         ...others.length ? { checkouts: others } : {},
-      })
-    }
+      } satisfies IndexedProject
+    })
     projects.sort((a, b) => a.name.localeCompare(b.name) || a.path.localeCompare(b.path))
     skipped.sort((a, b) => a.path.localeCompare(b.path))
     // A fresh scan starts the alias layer over, so a fixed alias file clears a problem the previous read reported.
@@ -411,11 +479,12 @@ export class ProjectIndex {
 
   /** The main worktree when the group has it, otherwise the checkout that answers both tie-breaks: remote, then depth. */
   private async representative(group: Facts[], signal: AbortSignal): Promise<Facts> {
-    const main = group.find(item => item.toplevel === dirname(item.commonDir))
+    const main = group.find(item => item.path === dirname(item.commonDir))
     if (main) return main
-    const remotes = new Map<Facts, string | undefined>()
-    for (const item of group) remotes.set(item, await remoteOf(item.path, signal))
-    const pool = group.some(item => remotes.get(item)) ? group.filter(item => remotes.get(item)) : group
+    const remote = await Promise.all(group.map(item => remoteOf(item.path, signal)))
+    const pairs = group.map((item, at) => [item, remote[at]] as const)
+    const withRemote = pairs.filter(([, url]) => url).map(([item]) => item)
+    const pool = withRemote.length ? withRemote : group
     return [...pool].sort((a, b) => depth(a.path) - depth(b.path) || a.path.length - b.path.length
       || a.path.localeCompare(b.path))[0]!
   }
@@ -450,10 +519,15 @@ export class ProjectIndex {
   /** The learned layer's current entries, or nothing when its store is absent or unreadable. */
   private learnedEntries(): [string, string][] {
     if (!this.options.learned) return []
-    try { return [...this.options.learned.entries()].filter(([alias, project]) => alias.trim() && project.trim())
-      .map(([alias, project]) => [alias.trim(), project.trim()] as [string, string]) }
-    catch (error) {
-      this.options.logger?.(`learned project aliases could not be read: ${text(error)}`)
+    try {
+      const entries = [...this.options.learned.entries()].filter(([alias, project]) => alias.trim() && project.trim())
+        .map(([alias, project]) => [alias.trim(), project.trim()] as [string, string])
+      this.learnedError = undefined
+      return entries
+    } catch (error) {
+      // Loading a snapshot and then scanning both consult the learned layer; one failure is reported once.
+      const message = `learned project aliases could not be read: ${text(error)}`
+      if (message !== this.learnedError) { this.learnedError = message; this.options.logger?.(message) }
       return []
     }
   }
