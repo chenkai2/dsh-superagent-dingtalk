@@ -160,8 +160,9 @@ async function drive(host: Host) {
   const { runtime, run } = host
   const master = runtime.masterId
   // Candidates wait, which the main Session decides in one call: a request it accepts, thanks it ignores, and plain chat in the
-  // channel, a proactive candidate whose card shows it touches no rule, which it ignores from its card.
-  const request = feishu('1', '@bot 修一下回归'), thanks = feishu('3', '@bot 谢谢'), chat = feishu('4', '中午吃什么', { mentions: [] })
+  // channel, a proactive candidate whose card shows it touches no rule, which it ignores from its card. Thanks is unaddressed
+  // on purpose: an addressed message is a request, which the ignore branch accepts instead.
+  const request = feishu('1', '@bot 修一下回归'), thanks = feishu('3', '谢谢', { mentions: [] }), chat = feishu('4', '中午吃什么', { mentions: [] })
   await runtime.receive(request); await runtime.receive(thanks); await runtime.receive(chat)
   const routed = await run(master, 'orchestrator_route', { decisions: [
     { kind: 'accept', trigger_id: request.id, title: '修复回归', worktree_name: 'fix-regression', acknowledgement: '收到，修复回归。' },

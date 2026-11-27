@@ -1,10 +1,11 @@
 /** Main Session tools for routing triggers, assessing candidates, sending replies, and updating settings and prompts. */
+import { createHash } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { z } from 'zod'
 import { UserError, followupOwners, key, reasonText, type Decision, type DecisionKind, type EngineForMainSession, type EngineForPeople }
   from '../../core/index.ts'
-import { IM_WORDS, NOTE_WORDS, wordCount } from '../../infra/text.ts'
+import { IM_WORDS, NOTE_WORDS, isChinese, wordCount } from '../../infra/text.ts'
 import { AssessmentSchema, EvalReadSchema, WorktreeNameSchema, type MasterAssessor } from '../assessment.ts'
 import { ticketCard } from '../cards.ts'
 import { PromptConfigSchema, savePrompts, type Prompts } from '../prompts.ts'
@@ -53,7 +54,7 @@ const RouteItemSchema = z.object({
   acknowledgement: z.string().nullish().describe(`accept: one brief sentence of at most ${IM_WORDS} words naming the concrete change and intended result in the source language. It is posted as a reply to the original source on acceptance, so do not quote the source; quote an earlier proposal briefly only when the trigger merely confirms it and the sentence does not already state it. No generic I will handle it.`),
   note: z.string().nullish().describe(`accept and attach: ${RoutingNoteSchema.description ?? ''}`),
   reason: z.string().nullish().describe('ignore and stop: why, at most 500 characters; an ignore needs it.'),
-  decline: z.string().nullish().describe(`ignore: one brief sentence of at most ${IM_WORDS} words in the source language telling the person, in the conversation that asked, that this was received and deliberately not taken up, and why. Send it for anything that addressed the agent; silence reads as the message never arriving.`),
+  decline: z.string().nullish().describe(`ignore: one brief sentence of at most ${IM_WORDS} words in the source language telling the person, in the conversation that asked, that this was received and deliberately not taken up, and why. Silence reads as the message never arriving.`),
 }).strict()
 type RouteItem = z.infer<typeof RouteItemSchema>
 type Kind = RouteItem['kind']
@@ -82,7 +83,21 @@ function invalid(item: RouteItem): string | undefined {
   }
   return undefined
 }
-type Routed = { decision?: DecisionKind; reason: string; ticketId?: string | undefined; triggerIds?: readonly string[]; declined?: boolean }
+type Routed = { decision?: DecisionKind; reason: string; ticketId?: string | undefined; triggerIds?: readonly string[]; declined?: boolean
+  /** Set when an `ignore` of an addressed message ran as an accept, so the caller sees the route decided it, not the model. */
+  acceptedAddressed?: boolean }
+/**
+ * The request's own words as an accepted ticket's title: its first line without the mentions that addressed the agent,
+ * whitespace collapsed and cut to the `accept` title limit.
+ */
+function addressedTitle(text: string): string {
+  return (text.split('\n')[0] ?? '')
+    .replace(/<@[^>\n]*>/g, ' ')
+    .replace(/(?:^|\s)@[\p{L}\p{N}_.-]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 200)
+}
 /**
  * Carry out one routing decision as its Engine command, in a transaction of its own. `decided` holds the Triggers that this
  * call's earlier items decided, with their batches.
@@ -115,6 +130,26 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
       return { ...fromDecision(decision), triggerIds: decision.triggerIds }
     }
     case 'ignore': {
+      // A person who mentioned the agent asked for something, so the code never lets an ignore drop it: it runs the accept the
+      // trigger already supplies a title and acknowledgement for. Model guidance alone cannot hold this rule, because whether
+      // a message matches a rule is a judgment about the rules, while whether a person asked is a fact about the message.
+      const trigger = host.store.triggers.get(item.trigger_id)
+      if (trigger?.addressed) {
+        const title = addressedTitle(trigger.text)
+        try {
+          const decision = host.engine.decide(item.trigger_id, { kind: 'accept', title, scope: title, reason: { code: 'explicitRouted' },
+            acknowledgement: isChinese(title) ? '收到，我来处理。' : 'Received; working on it.',
+            name: `work-${createHash('sha1').update(item.trigger_id).digest('hex').slice(0, 6)}` })
+          // A Decision that created no ticket cannot answer the request; nothing else can either, so say so.
+          if (decision.kind !== 'accept' || !decision.ticketId) {
+            return { refused: `It addressed the agent, so it is a request, but no ticket was created: ${reasonText(decision.reason)}` }
+          }
+          return { ...fromDecision(decision), acceptedAddressed: true, triggerIds: decision.triggerIds }
+        } catch (error) {
+          if (error instanceof UserError) return { refused: `It addressed the agent, so it is a request, but no ticket was created: ${error.message}` }
+          throw error
+        }
+      }
       const decision = host.engine.decide(item.trigger_id, { kind: 'ignore', reason: item.reason! })
       // Somebody asked and the answer is no: say so, because a decision nobody can see is indistinguishable from a lost message.
       if (item.decline) try { host.engine.reply({ purpose: 'decline', triggerId: item.trigger_id, text: item.decline }) }
@@ -133,7 +168,7 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
 function routeTool(host: MainToolsHost): Tool {
   return tool({
     name: 'orchestrator_route',
-    description: 'Route candidates, one item each by the card\'s trigger_id, in one call: accept an explicit request as a new ticket, attach a trigger to an existing ticket, stop a ticket on a person\'s stop message, or ignore a candidate that needs no ticket or stop, as dispatch says. A message that addressed the agent is a request this installation was asked to carry out: accept it, or attach it to the ticket it belongs to, even when no rule mentions what it asks for and even when the answer is short. Ignore only a message that did not address the agent, because the rules decide those. Use decline to tell a person why an addressed message was not taken up when you do ignore one. Items run in order and each is answered on its own; a refused item leaves the others. An inferred candidate may be ignored here; accepting one goes through orchestrator_eval_decide.',
+    description: 'Route candidates, one item each by the card\'s trigger_id, in one call: accept an explicit request as a new ticket, attach a trigger to an existing ticket, stop a ticket on a person\'s stop message, or ignore a candidate that needs no ticket or stop, as dispatch says. A message that addressed the agent is a request this installation was asked to carry out: accept it, or attach it to the ticket it belongs to, even when no rule mentions what it asks for and even when the answer is short. Ignore only a message that did not address the agent, because the rules decide those: an ignore of an addressed message is carried out as an accept, and its result says acceptedAddressed. Items run in order and each is answered on its own; a refused item leaves the others. An inferred candidate may be ignored here; accepting one goes through orchestrator_eval_decide.',
     schema: z.object({ decisions: z.array(RouteItemSchema).min(1).max(20) }).strict(),
     execute: async ({ decisions }) => {
       const decided = new Map<string, string>()
@@ -147,7 +182,7 @@ function routeTool(host: MainToolsHost): Tool {
           for (const id of result.triggerIds ?? []) if (!decided.has(id)) decided.set(id, item.trigger_id)
           const ticket = result.ticketId ? host.store.tickets.get(result.ticketId) : undefined
           return { ...head, ...(result.decision ? { decision: result.decision } : {}), reason: result.reason,
-            ...(ticket ? { ticket: ticketCard(ticket) } : {}) }
+            ...(result.acceptedAddressed ? { acceptedAddressed: true } : {}), ...(ticket ? { ticket: ticketCard(ticket) } : {}) }
         } catch (error) {
           if (error instanceof UserError) return { ...head, refused: error.message }
           host.context.logger.warn('dsh-superagent could not route trigger %s: %s', item.trigger_id, String(error))

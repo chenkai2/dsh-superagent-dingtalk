@@ -33,7 +33,10 @@ it('evaluates a message that arrives on a thread while an earlier candidate\'s c
   // The first candidate's source link lookup is slow; Feishu allows it up to linkTimeoutMs.
   vi.mocked(Commands.prototype.lark).mockImplementation(async args => { if (args.includes('+messages-mget') && args.includes('om_1')) await gate.promise; return lark })
   await h.runtime.settings.pause(true, 'panel')
-  const a1 = feishu('1', '@bot 修 A'), b1 = feishu('2', '@bot 修 B'), b2 = feishu('3', '@bot B 还有这个', { root_id: 'om_2' })
+  // B is unaddressed on purpose: this decides it with a plain ignore to advance the thread's Eval, while an addressed message
+  // would be accepted instead. Admission of an unaddressed message from a listed sender, and the batching the assertions below
+  // check, are the same either way.
+  const a1 = feishu('1', '@bot 修 A'), b1 = feishu('2', '修 B', { mentions: [] }), b2 = feishu('3', '@bot B 还有这个', { root_id: 'om_2' })
   h.runtime.receive(a1); h.runtime.receive(b1)
   await h.runtime.settings.pause(false, 'panel')
   await waitUntil(() => linkLookedUp('om_1'))
