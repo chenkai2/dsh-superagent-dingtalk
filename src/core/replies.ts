@@ -22,22 +22,33 @@ export interface Reply { id: string; status: ReplyStatus; reused: boolean }
 
 /**
  * Whether text reads as Chinese rather than Japanese, which decides the language of the end notice. `src/infra/text.ts` holds
- * this rule as `isChinese` for the layers above the core, which the core cannot import, so the core keeps the same test.
+ * this rule as `isChinese` for the layers above the core, which the core cannot import; `feat/lifecycle-interrupt` (PR #2) adds
+ * it there, so this file inlines the same test until that lands.
  */
+// TODO: with PR #2 merged, import `isChinese` and add a parity test for the copy that remains.
 const chinese = (text: string): boolean => /\p{Script=Han}/u.test(text) && !/[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(text)
-/** The longest prefix of `line` that fits `max` characters, ended with an ellipsis when it was cut. */
-const clip = (line: string, max: number): string => line.length > max ? `${line.slice(0, max - 1).trimEnd()}…` : line
+/** Grapheme segmentation, so a clip counts the glyphs a reader sees instead of UTF-16 code units. */
+const glyphs = new Intl.Segmenter('en', { granularity: 'grapheme' })
+/**
+ * The longest prefix of `line` that fits `max` glyphs, ended with an ellipsis when it was cut. Slicing by code unit cuts an
+ * emoji, a joined glyph, or a surrogate pair in half, and the person then reads the replacement glyph instead.
+ */
+const clip = (line: string, max: number): string => {
+  const reached = [...glyphs.segment(line)].map(item => item.segment)
+  return reached.length > max ? `${reached.slice(0, max - 1).join('').trimEnd()}…` : line
+}
 /**
  * The line a `dropped` end adds to the conversation, in the language of the request that started the ticket. A worker that
  * reports nothing left to do sends no message itself, so this line is the only word the person who asked gets; the report's
  * summary follows, first line only, because the record keeps the rest.
  */
 function droppedNotice(request: string, summary: string): string {
-  const first = summary.split('\n').map(item => item.trim()).find(Boolean)?.replace(/^#+\s*/, '') ?? ''
+  // CommonMark allows one to six `#` as an ATX heading only before a space, so an issue number or a hashtag stays content.
+  const first = summary.split('\n').map(item => item.trim()).find(Boolean)?.replace(/^#{1,6}\s+/, '') ?? ''
   const requestChinese = chinese(request)
   const said = requestChinese ? '这个工单已结束，没有做任何改动。' : 'This ticket has ended, with no changes made.'
-  // A Channel allows an IM message 100 words, and Chinese can approach one word per character where English runs several
-  // characters a word, so the Chinese summary is clipped harder: 60 characters against 160, each leaving room for the line above.
+  // A Channel allows an IM message 100 words, and Chinese can approach one word per glyph where English runs several
+  // characters a word, so the Chinese summary is clipped harder: 60 glyphs against 160, each leaving room for the line above.
   const detail = clip(first, requestChinese ? 60 : 160)
   return detail ? `${said}\n\n${detail}` : said
 }
@@ -101,6 +112,8 @@ export class Replies extends EnginePart {
   announceDropped(ticket: Ticket, assignmentId: string, summary: string): void {
     if (ticket.resultReply?.assignmentId === assignmentId) return
     const channel = this.sourceChannel(ticket)
+    // A ticket with no Channel at all is the one end that stays unannounced: there is nowhere to write, and its recorded end
+    // still shows in the panel. Every other path either queues this line or leaves a refusal to read.
     if (!channel) return
     const id = key('dropped-notice', ticket.id, assignmentId)
     if (this.options.outbox.status(id) !== undefined) return
