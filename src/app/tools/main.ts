@@ -90,17 +90,17 @@ type Routed = { decision?: DecisionKind; reason: string; ticketId?: string | und
 /** Why an addressed message could not become the accept it asked for; the Engine's own reason follows it. */
 const NOT_ACCEPTED = 'It addressed the agent, so it is a request, but no ticket was created'
 /**
- * Whether the conversation this message belongs to speaks Chinese. The message's own text decides when it has any; a message
- * with no words carries no language, so the newest person's message before it on the same Thread does. With nothing to go by
- * the answer is English, the language of the product's own text (used only where the conversation states none).
+ * Whether the conversation this message belongs to speaks Chinese. The message's own text decides when it has any, and a
+ * message with no words carries no language, so the newest person's message with words before it on the same Thread does.
+ * Only a Thread that holds no such message falls back, and then the answer is English as a stable default: the host's text
+ * is bilingual, so nothing else picks a side for a conversation that has not spoken yet.
  */
 function speaksChinese(host: MainToolsHost, trigger: Trigger): boolean {
   if (trigger.text.trim() !== '') return isChinese(trigger.text)
   const primary = trigger.threads[0]
   if (!primary) return false
-  // Oldest-first, so the last person's message with words is the newest one before this Trigger.
-  const earlier = host.store.read.threadTriggers(threadKey(primary), 50, { at: trigger.at, id: trigger.id })
-  const last = earlier.filter(item => item.human && item.text.trim() !== '').at(-1)
+  // The Store finds that message by itself, so bots and messages without words between it and this Trigger do not hide it.
+  const last = host.store.read.lastWordsOnThread(threadKey(primary), { at: trigger.at, id: trigger.id })
   return last ? isChinese(last.text) : false
 }
 /**
@@ -118,13 +118,17 @@ function answerWithoutWords(host: MainToolsHost, trigger: Trigger, chinese: bool
     return false
   }
 }
-/** The mention that addressed the agent is the address at the start of the message; a later mention names something it is about. */
+/**
+ * The one mention at the very start of a message is its address, and only that one is dropped. Whose mention it is stays
+ * unknown here: the Trigger records that the agent was mentioned, not which text was its mention, so a message that opens by
+ * addressing someone else and then the agent keeps the second one in its title.
+ */
 const ADDRESS = /^\s*(?:<@[^>\n]*>|@[\p{L}\p{N}_.-]+)/u
 /**
  * The request's own words as an accepted ticket's title: the address removed, whitespace collapsed and cut to the `accept`
  * title limit. A message may address the agent on a line of its own, so the title is the first line that is not empty after
- * that, and a message that is only a mention keeps its whole text rather than becoming an empty title. Mentions later in the
- * message stay: they name the people and things the request is about.
+ * that, and a message that is only a mention keeps its whole text rather than becoming an empty title. Mentions after the
+ * address stay: they name the people and things the request is about.
  */
 function addressedTitle(text: string): string {
   const body = text.replace(ADDRESS, ' ')
@@ -187,8 +191,6 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
       const trigger = host.store.triggers.get(item.trigger_id)
       const bot = trigger?.human && trigger.addressed
         ? listedBot(host.store.settings(), trigger.actor, actorAliases(trigger.meta)) : undefined
-      // The bots list is an operator's declaration, so a person's id typed there would make that person's requests silently
-      // ignorable and nothing else about the message would reveal it: the skip says so.
       // The bots list is per Source, so the report names the Source and the entry that matched: a person's id typed there
       // would make that person's requests silently ignorable and nothing else about the message would reveal it.
       if (trigger && bot) host.context.logger.warn('dsh-superagent takes trigger %s from %s on %s for a bot message, because that '

@@ -377,6 +377,14 @@ it('says in the log when a listed bot keeps its own mention ignorable', async ()
   expect(await h.route({ kind: 'ignore', trigger_id: trigger.id, reason: 'A bot status.' })).toMatchObject({ decision: 'ignore' })
   expect(warn).toHaveBeenCalledWith(expect.stringContaining('remove that entry from this Source\'s bots if the sender is a person'),
     trigger.id, trigger.actor.id, trigger.source, 'Alice bot')
+  // A bots row without a name is reported by its id, so the warning still points at the entry to remove.
+  const renamed = h.runtime.store.settings()
+  h.runtime.store.saveSettings({ ...renamed, policy: { ...renamed.policy,
+    sources: { ...renamed.policy.sources, feishu: { ...renamed.policy.sources.feishu!, bots: [{ id: 'ou_alice' }] } } } })
+  const nameless = feishu('27', '@bot 部署完成')
+  h.runtime.receive(nameless); await h.runtime.idle()
+  await h.route({ kind: 'ignore', trigger_id: nameless.id, reason: 'A bot status.' })
+  expect(warn).toHaveBeenCalledWith(expect.stringContaining('remove that entry'), nameless.id, nameless.actor.id, nameless.source, 'ou_alice')
 })
 
 it('titles an accepted addressed message by its own first line without the mention, and keeps that line when only a mention is left', async () => {
@@ -505,6 +513,28 @@ it('answers a message with no words in the language the conversation last used',
   expect(markdowns()).toContain('This message is only a mention, with nothing to act on.')
 })
 
+it('answers a top-level mention in English, because its Thread holds no language yet', async () => {
+  // A mention that opens its own Thread has nothing before it to read a language from, and its own text carries none.
+  const trigger = feishu('40', '@bot')
+  h.runtime.receive(trigger); await h.runtime.idle()
+  const accepted = await h.route({ kind: 'ignore', trigger_id: trigger.id, reason: 'Mention only.' })
+  expect(h.runtime.store.tickets.get((accepted.ticket as { ticket_id: string }).ticket_id)!.title).toBe('@bot')
+  await h.runtime.idle()
+  expect(markdowns()).toContain('Received: @bot')
+})
+
+it('finds the conversation language behind messages that carry no words', async () => {
+  // Bots and messages without words beside the request must not hide it: the lookup asks the Store for the newest person's
+  // message with words on the Thread, however many wordless messages followed it.
+  h.runtime.store.triggers.save(feishu('41', '@bot 帮我看一下热搜轻参与的进度', { root_id: undefined }))
+  for (let index = 0; index < 55; index++) h.runtime.store.triggers.save(feishu(String(42_000 + index), '', { root_id: 'om_41' }))
+  const blank = feishu('70000', '   ', { root_id: 'om_41' })
+  h.runtime.receive(blank); await h.runtime.idle()
+  expect(await h.route({ kind: 'ignore', trigger_id: blank.id, reason: 'No words.' })).toMatchObject({ decision: 'ignore' })
+  await h.runtime.idle()
+  expect(markdowns()).toContain('这条消息只有 @ 提及，没有可执行的内容。')
+})
+
 it('removes the mention that addressed the agent from the title, and keeps another person\'s mention', async () => {
   // Only the address is the agent's mention. A mention later in the message names someone it is about, so dropping it would
   // change what the request says.
@@ -514,6 +544,11 @@ it('removes the mention that addressed the agent from the title, and keeps anoth
   expect(h.runtime.store.tickets.get((accepted.ticket as { ticket_id: string }).ticket_id)!.title).toBe('看 @张三 的 PR 是不是合了')
   await h.runtime.idle()
   expect(markdowns()).toContain('收到：看 @张三 的 PR 是不是合了')
+  // Only the first mention is the address, without judging whose it is: two at the start keep the second in the title.
+  const both = feishu('71', '@张三 @bot 都在开头')
+  h.runtime.receive(both); await h.runtime.idle()
+  const kept = await h.route({ kind: 'ignore', trigger_id: both.id, reason: 'Two mentions.' })
+  expect(h.runtime.store.tickets.get((kept.ticket as { ticket_id: string }).ticket_id)!.title).toBe('@bot 都在开头')
 })
 
 it('cuts an over-long title without leaving half a surrogate pair', async () => {
