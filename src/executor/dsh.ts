@@ -655,7 +655,10 @@ export class DshExecutor implements Executor {
   private sweep(): void {
     const run = (): void => {
       if (this.host.closing()) return
-      void this.worktrees.sweep(this.host.store.tickets.list()).catch((error: unknown) => {
+      void this.worktrees.sweep(this.host.store.tickets.list().map(ticket => {
+        const project = this.host.project?.(ticket) ?? ticket.project
+        return project && project !== ticket.project ? { ...ticket, project } : ticket
+      })).catch((error: unknown) => {
         this.host.context.logger.warn('dsh-superagent could not sweep the worktrees: %s', String(error))
       })
       this.after(SWEEP_INTERVAL_MS, run)

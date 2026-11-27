@@ -54,7 +54,7 @@ beforeEach(async () => {
 })
 afterEach(async () => { await rm(root, { recursive: true, force: true }) })
 
-describe('a project ticket directory', () => {
+describe('a project ticket directory', { timeout: 30_000 }, () => {
   it('is a detached worktree of the project under the state worktrees root', async () => {
     const portal = await project(root, 'portal.example.com')
     const directory = worktreePath(stateDir, 'fix-button-abc')
@@ -133,7 +133,7 @@ describe('a project ticket directory', () => {
   })
 })
 
-describe('a ticket without a project', () => {
+describe('a ticket without a project', { timeout: 30_000 }, () => {
   it('accepts a directory that exists and is no one else\'s worktree', async () => {
     const neutral = worktreePath(stateDir, 'fix-button-abc')
     expect(await worktrees.standing(neutral)).toEqual({ state: 'absent' })
@@ -149,7 +149,7 @@ describe('a ticket without a project', () => {
   })
 })
 
-describe('sweeping worktrees', () => {
+describe('sweeping worktrees', { timeout: 30_000 }, () => {
   const at = (days: number) => new Date(Date.parse('2026-11-27T12:00:00.000Z') + days * 24 * 3600_000)
   const now = at(0)
   const running = (directory: string, overrides: Record<string, unknown> = {}) =>

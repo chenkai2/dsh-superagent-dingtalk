@@ -84,17 +84,9 @@ export class Worktrees {
 
   /** The root all ticket directories live in. */
   root(): string { return worktreesRoot(this.host.stateDir) }
-  /** The path of the directory named after a ticket's execution name. */
-  directory(name: string): string { return worktreePath(this.host.stateDir, name) }
   /** The cleanups that failed since this instance was created, for the panel and the tests. */
   failures(): readonly CleanupFailure[] { return this.failed }
   private readonly failed: CleanupFailure[] = []
-
-  /** Whether `directory` is a worktree of `project`: its own work tree root, and the project's repository. */
-  async matches(directory: string, project: TicketProject): Promise<boolean> {
-    const standing = await this.standing(directory, project)
-    return standing.state === 'ready'
-  }
 
   /**
    * Judges a directory before it is used. With a project it must be that project's worktree: a worktree of another
@@ -118,7 +110,7 @@ export class Worktrees {
     const standing = await this.standing(directory, project)
     if (standing.state === 'ready') return
     throw new WorkspaceError(standing.state === 'absent'
-      ? `The ticket directory ${directory} does not exist, and no worktree of ${project?.name ?? 'a project'} was created there`
+      ? project ? `The ticket directory ${directory} is not a worktree of ${project.name}` : `The ticket directory ${directory} does not exist`
       : `The ticket directory ${directory} cannot be used: ${standing.why}`)
   }
 
@@ -135,8 +127,9 @@ export class Worktrees {
     await this.git(['-C', project.path, 'worktree', 'prune'], project.path, signal).catch(error => {
       throw new WorkspaceError(`The project ${project.name} could not be read at ${project.path}: ${this.message(error)}`)
     })
-    // Clear what the earlier attempt left, so the add below starts from nothing.
-    if (await this.exists(directory)) await this.reset(directory, project, signal)
+    // Clear what the earlier attempt left, so the add below starts from nothing. It is no worktree git can remove: this
+    // project's own was reused above, another one is refused, and what a broken attempt left holds no repository at all.
+    if (await this.exists(directory)) await rm(directory, { recursive: true, force: true })
     const head = (await this.git(['-C', project.path, 'rev-parse', 'HEAD'], project.path, signal)
       .catch(error => { throw new WorkspaceError(`The project ${project.name} has no commit to work from: ${this.message(error)}`) })).trim()
     if (!head) throw new WorkspaceError(`The project ${project.name} has no commit to work from`)
@@ -173,7 +166,7 @@ export class Worktrees {
    */
   async release(ticket: Ticket, now: Date = new Date()): Promise<void> {
     const directory = ticket.execution?.directory
-    if (!directory || !below(this.root(), directory) || liveTicket(ticket)) return
+    if (!directory || !below(this.root(), directory)) return
     if (!await this.exists(directory) || !await this.expired(ticket, directory, now)) return
     await this.remove(directory, ticket.project).catch((error: unknown) => { this.fail(directory, error) })
   }
@@ -213,8 +206,8 @@ export class Worktrees {
     // registrations below the root are cleared; a checkout elsewhere is the operator's.
     for (const project of distinctProjects(tickets)) {
       try {
-        const listed = await this.git(['-C', project.path, 'worktree', 'list', '--porcelain'], project.path)
         await this.git(['-C', project.path, 'worktree', 'prune'], project.path)
+        const listed = await this.git(['-C', project.path, 'worktree', 'list', '--porcelain'], project.path)
         for (const path of registrations(listed)) {
           if (!below(root, path) || !await this.exists(path)) continue
           const owner = owned.get(resolve(path))
@@ -248,17 +241,6 @@ export class Worktrees {
     if (now.getTime() - keptFrom >= KEPT_AFTER_END_MS) return true
     const used = (await stat(directory).catch(() => undefined))?.mtimeMs ?? 0
     return now.getTime() - Math.max(ended || 0, used) >= MAX_WORKTREE_AGE_MS
-  }
-
-  /** Clears an existing directory of `project` at `directory`: its registration, its files, and what a removal left behind. */
-  private async reset(directory: string, project: TicketProject, signal?: AbortSignal): Promise<void> {
-    // A valid worktree and its registration go together. In the half-broken state this fails, which is why it is not the
-    // only step: the directory is removed below, and the second prune clears the registration that outlives it.
-    await this.git(['-C', project.path, 'worktree', 'remove', '--force', directory], project.path, signal)
-      .catch(() => { /* Half-broken, or a directory that was never a worktree: cleared below. */ })
-    await rm(directory, { recursive: true, force: true })
-    await this.git(['-C', project.path, 'worktree', 'prune'], project.path, signal)
-      .catch(() => { /* The add below reports the project as unreadable, with git's own message. */ })
   }
 
   /** The work tree root of `directory`, or undefined when it holds no repository at all. */

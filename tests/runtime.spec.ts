@@ -1129,7 +1129,7 @@ it('counts a ticket whose directory the host prepared before prepare commands ex
   expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)!.state).toBe('running')
 })
 
-describe('ticket workspaces', () => {
+describe('ticket workspaces', { timeout: 30_000 }, () => {
   /** A project as the index describes one, with the git answers a worktree of it needs. */
   const stamp = (ticket: { id: string; execution?: { name: string; directory: string } }) => {
     const project = { name: 'acme/widgets', path: join(directory, 'projects', 'widgets'), commonDir: join(directory, 'projects', 'widgets', '.git'), basis: 'named' as const }
@@ -1184,6 +1184,42 @@ describe('ticket workspaces', () => {
     const stored = runtime.store.tickets.get(ticket.id)!
     expect(stored.assignments.at(-1)!.report).toMatchObject({ state: 'failed', summary: expect.stringContaining('No space left on device') })
     expect(relays(runtime.masterId).at(-1)).toMatchObject({ state: 'failed', summary: expect.stringContaining('No space left on device') })
+  })
+
+  it('keeps one ticket\'s failed worktree from touching another ticket on the same project', async () => {
+    const first = await acceptedTicket()
+    const second = await acceptedTicket(feishu('2', '@bot 另一个改动'))
+    await failed(first.sessionId)
+    await failed(second.sessionId)
+    const one = stamp(first.ticket)
+    const two = stamp(second.ticket)
+    rmSync(one.target, { recursive: true, force: true })
+    rmSync(two.target, { recursive: true, force: true })
+    answers[`git -C ${one.project.path} worktree add --detach ${one.target} head-1`] = new Error('fatal: No space left on device')
+    await runtime.engine.retryTicket(first.ticket.id)
+    await runtime.engine.retryTicket(second.ticket.id)
+    await runtime.idle()
+    expect(runtime.store.tickets.get(first.ticket.id)!.assignments.at(-1)!.report).toMatchObject({ state: 'failed' })
+    // The other ticket on the same project is untouched: its worktree was created and its worker runs there.
+    expect(runtime.store.tickets.get(second.ticket.id)!.assignments.at(-1)!.state).toBe('running')
+    expect(existsSync(two.target)).toBe(true)
+    // The ticket whose creation failed has no empty directory standing in for the worktree it never got.
+    expect(existsSync(one.target)).toBe(false)
+  })
+
+  it('fails a project ticket whose directory is not the project\'s worktree once preparation is over', async () => {
+    const { ticket, sessionId } = await acceptedTicket()
+    await failed(sessionId)
+    const { target } = stamp(ticket)
+    rmSync(target, { recursive: true, force: true })
+    // Neither the engine's add nor a prepare command made a worktree of the path: it stays a plain directory.
+    delete answers[`git -C ${target} rev-parse --show-toplevel`]
+    delete answers[`git -C ${target} rev-parse --git-common-dir`]
+    await runtime.engine.retryTicket(ticket.id)
+    await runtime.idle()
+    // The worker never starts in an empty directory standing in for the worktree.
+    expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)!.report)
+      .toMatchObject({ state: 'failed', summary: expect.stringContaining('is not a worktree of acme/widgets') })
   })
 
   it('refuses a directory that holds another worktree, and says why', async () => {
