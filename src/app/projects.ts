@@ -289,6 +289,8 @@ export class ProjectIndex {
   private readonly aliasProject = new Map<string, string>()
   /** Project path to its sorted, unambiguous aliases. */
   private readonly projectAliases = new Map<string, string[]>()
+  /** Common directory to its config file's mtime when the remote was last read; a change forces a re-read. */
+  private readonly configStamps = new Map<string, number>()
   private scanProblem: string | undefined
   private writeProblem: string | undefined
   private aliasProblem: string | undefined
@@ -419,10 +421,16 @@ export class ProjectIndex {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') this.writeProblem = `${PROJECTS_FILE} could not be read: ${text(error)}`
       return
     }
-    if (typeof parsed !== 'object' || parsed === null) return
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      this.writeProblem = `${PROJECTS_FILE} does not hold a project index; it was ignored`
+      return
+    }
     const file = parsed as Partial<Snapshot>
     if (typeof file.generatedAt !== 'string' || typeof file.root !== 'string' || !Array.isArray(file.projects)
-      || !Array.isArray(file.skipped)) return
+      || !Array.isArray(file.skipped)) {
+      this.writeProblem = `${PROJECTS_FILE} does not hold a project index; it was ignored`
+      return
+    }
     const projects = file.projects.filter(validProject)
     const skipped = file.skipped.filter(validSkipped)
     const dropped = file.projects.length - projects.length + file.skipped.length - skipped.length
@@ -434,7 +442,9 @@ export class ProjectIndex {
   /** Scan the root: probe its checkouts, group them by common directory, and keep one entry per group. */
   private async scan(): Promise<Snapshot> {
     const root = this.options.root()
-    if (!existsSync(root) && this.snapshot?.root === root && this.snapshot.projects.length)
+    // A configured root that does not exist is never a successful empty scan, whether it moved or disappeared; the previous
+    // snapshot stays readable and the problem says why nothing was replaced.
+    if (!existsSync(root) && this.snapshot)
       throw new Error(`the execution root ${root} does not exist; keeping the previous snapshot`)
     const signal = this.abort.signal
     const directories = candidates(root)
@@ -460,7 +470,11 @@ export class ProjectIndex {
     const projects = await mapLimit([...groups.values()], PROBE_CONCURRENCY, async group => {
       const representative = await this.representative(group, signal)
       const previous = unchanged.get(`${representative.commonDir}\0${representative.head}`)
-      const remote = previous ? previous.remote : await remoteOf(representative.path, signal)
+      // A remote rename rewrites the config file, so its mtime is the cheap signal that the reused URL may be stale.
+      const stamp = configStamp(representative.commonDir)
+      const remoteReusable = previous !== undefined && this.configStamps.get(representative.commonDir) === stamp
+      const remote = remoteReusable ? previous.remote : await remoteOf(representative.path, signal)
+      if (!remoteReusable) this.configStamps.set(representative.commonDir, stamp)
       const lastCommit = previous ? previous.committedAt : await committedAt(representative.path, signal)
       const others = group.filter(item => item.path !== representative.path).map(item => item.path).sort()
       return {
@@ -481,7 +495,7 @@ export class ProjectIndex {
   private async representative(group: Facts[], signal: AbortSignal): Promise<Facts> {
     const main = group.find(item => item.path === dirname(item.commonDir))
     if (main) return main
-    const remote = await Promise.all(group.map(item => remoteOf(item.path, signal)))
+    const remote = await mapLimit(group, PROBE_CONCURRENCY, item => remoteOf(item.path, signal))
     const pairs = group.map((item, at) => [item, remote[at]] as const)
     const withRemote = pairs.filter(([, url]) => url).map(([item]) => item)
     const pool = withRemote.length ? withRemote : group
@@ -565,6 +579,11 @@ export class ProjectIndex {
 function resolved(project: IndexedProject, basis: ProjectBasis): ResolvedProject {
   return { name: project.name, path: project.path, commonDir: project.commonDir, ...project.remote ? { remote: project.remote } : {}, basis }
 }
+/** The repository config's mtime, or NaN when it cannot be read: an unknown stamp never matches, so the remote is re-read. */
+function configStamp(commonDir: string): number {
+  try { return statSync(join(commonDir, 'config')).mtimeMs } catch { return Number.NaN }
+}
+
 /** A real path for a directory that exists, or the path itself when it does not. */
 function safeReal(path: string): string {
   try { return real(path) } catch { return path }

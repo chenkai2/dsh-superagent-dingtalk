@@ -444,7 +444,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/tools.spec.ts` | The Sessions' tools: what `orchestrator_read` reads for each role, and the shapes and checks of the other main Session tools |
 | `tests/runtime-concurrency.spec.ts` | Work that overlaps: Triggers during a pass, Tickets that change during deliveries and launches |
 | `tests/http.spec.ts` | The same-origin and loopback checks, the status of each kind of failure, the body limit, path parameters and queries |
-| `tests/projects.spec.ts` | The project index: `.git` directories and files, bare, broken and submodule skips, one entry per common directory, real-path normalization, aliases and every resolution outcome including ambiguity, persisted-entry validation, a disappeared root, reused facts, the non-blocking HTTP refresh, and the main Session's keyword search |
+| `tests/projects.spec.ts` | The project index: `.git` directories and files, bare, broken and submodule skips, one entry per common directory, real-path normalization, aliases and every resolution outcome including ambiguity, persisted-entry validation, a disappeared or reconfigured missing root, reused facts, the non-blocking HTTP refresh, and the main Session's keyword search |
 | `tests/settings.spec.ts` | Settings saves that race a model or account check, a Policy sync that a save outran, and the refusals of the pause, a sync and a block |
 | `tests/views.spec.ts` | What the management views derive from the Store, such as the Thread a dropped message belongs to |
 | `tests/timeline.spec.ts` | A Thread's pages and a Trigger's neighbours by time and then id, with every received Trigger's time in one form |
