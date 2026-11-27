@@ -3,6 +3,34 @@
 All notable changes to `@chenkai114/dsh-superagent-dingtalk`. This project publishes from a GitHub Release,
 so a version here without a link is one whose release was superseded before publishing.
 
+## 0.0.37 — 2026-11-27
+
+### Added
+
+- **按项目执行**（设计见 `docs/009`）：派活时可指定项目，工单在该项目的**隔离工作树**里运行，不再在工
+  作根里新建空目录。解析由代码算（`named`/`indexed`/`alias`），判不出来就留空、走空目录——**不猜**。
+  会话目录固定在 `<stateDir>/worktrees/`，`executor.directory` 只作为项目根、不再决定工单目录。
+- **项目索引**：扫描工作根下的仓库（支持 worktree 形态的 `.git` 文件、跳过 bare 与子模块、按
+  `realpath(commonDir)` 去重），后台生成、不阻塞启动；面板可看生成时间、跳过原因、与上次快照的差异。
+- **纠正记录**：人在会话里说「这不是 A 是 B」时，工单以 `stopped`（`by: human`）结束、不再被下一句
+  人话唤醒，纠正写进工单历史，并把说法学成别名（SQLite 权威源），下次同类请求直接判对。
+- 回复语言跟随用户：中文请求回中文、其它回英文；零字消息按同会话上一条有正文的人消息判定。
+
+### Fixed
+
+- **被 @ 的消息不会再被静默忽略**：模型选 `ignore` 时由代码改成建单（`orchestrator_route`），带审计标记
+  `acceptedAddressed`；机器人（Source 的 `bots` 名单，按 id 与别名双重匹配）仍可忽略。
+- **确认语不再超 IM 词数上限**：长中文请求会被截到 100 词并以 `…` 收尾——此前会让飞书投递永久失败。
+- 纯提及、纯空白、无正文的消息不再建出空标题工单，改为回一句 decline。
+- 纠正通知同样受词数约束（此前 40 字以上的项目名会让通知永远投不出去）。
+- 索引在「配置的根不存在」时保留旧快照，不再静默清空；持久化文件里的坏条目逐条丢弃并报原因。
+- 清理工作树时先判定目录身份，避免删掉**别的项目**的工作树。
+
+### Changed
+
+- `executor.prepare` 的约定变了：有项目的工单由引擎先建工作树，`prepare` 在其后运行、可用于装依赖。
+  **照抄旧文档里 `git worktree add` 的部署必须删掉那一步**，否则会 `already exists` 失败。
+
 ## 0.0.36 — 2026-11-27
 
 ### Fixed
