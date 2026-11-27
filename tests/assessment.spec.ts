@@ -42,6 +42,8 @@ function setup(strength: 'explicit' | 'inferred' = 'inferred', bodies = Array.fr
     store: { triggers: repo.triggers, settings: () => SettingsSchema.parse({}),
       read: { lastWordsOnThread: () => undefined } as unknown as AssessorHost['store']['read'] },
     logger: { warn: () => {} },
+    // These Triggers never address the agent, so the addressed guard resolves no project either.
+    project: () => undefined,
     threadContext: threadContext ?? (trigger => sources.threadContext(trigger)),
     effects: { enqueue: () => {}, handle: () => {} }, paused: () => false, deliver: async () => {}, candidateCard: async candidate => ({ eval_id: candidate.evalId }),
   }

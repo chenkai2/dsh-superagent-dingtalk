@@ -397,8 +397,8 @@ export class ProjectIndex {
   }
 
   /**
-   * Resolve one request's project: by the name a model supplied, or by the aliases its text mentions. Code decides the
-   * basis; anything that is not one answer is left empty rather than guessed.
+   * Resolve one request's project: by the name a model supplied, or by the one name or alias its text mentions. Code decides
+   * the basis; anything that is not one answer is left empty rather than guessed.
    * @param nameOrAlias - The project name or alias a model supplied, if any.
    * @param sourceText - The request's original text, which must contain the name or alias for a `named` basis.
    * @returns The one project with its basis, or `undefined` when nothing, or more than one thing, matched.
@@ -413,10 +413,20 @@ export class ProjectIndex {
     }
     // A mention of an ambiguous alias leaves the whole request empty: the one thing the text did point at is not decidable.
     if ([...this.ambiguous].some(alias => alias && sourceText.includes(alias))) return undefined
-    const mentions = [...this.aliasProject.keys()].filter(alias => alias && sourceText.includes(alias))
-    if (mentions.length !== 1) return undefined
-    const project = this.projectOfAlias(mentions[0]!)
-    return project ? resolved(project, 'alias') : undefined
+    // The request's words count a project's own name exactly as they count an alias: the accept this reads for may be code's,
+    // with no model to name the project, and a name in the message is then the only thing it points at.
+    const byName = (this.snapshot?.projects ?? []).filter(project => project.name && sourceText.includes(project.name))
+    const byAlias = [...this.aliasProject.keys()].filter(alias => alias && sourceText.includes(alias))
+    const hits = new Map<string, IndexedProject>()
+    for (const project of byName) hits.set(project.path, project)
+    for (const alias of byAlias) {
+      const project = this.projectOfAlias(alias)
+      if (project) hits.set(project.path, project)
+    }
+    // One answer, or none: two names, two aliases, or a name and an alias that disagree stay empty rather than guessed.
+    if (hits.size !== 1) return undefined
+    const project = [...hits.values()][0]!
+    return resolved(project, byName.some(hit => hit.path === project.path) ? 'named' : 'alias')
   }
 
   private projectNamed(name: string): IndexedProject | undefined {

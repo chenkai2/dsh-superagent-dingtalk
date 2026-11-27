@@ -1,7 +1,7 @@
 /** The project worktrees a ticket works in: creation, identity and cleanup, against real git repositories. */
 import { execFile } from 'node:child_process'
 import { realpathSync } from 'node:fs'
-import { mkdir, mkdtemp, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
@@ -301,5 +301,75 @@ describe('cleanup that must not trust a path', { timeout: 30_000 }, () => {
     await through.remove(directory, portal)
     await expect(stat(directory)).rejects.toThrow()
     expect(await git(portal.path, 'worktree', 'list', '--porcelain')).not.toContain(directory)
+  })
+})
+
+describe('a project ticket directory beside the project\'s own copy', { timeout: 30_000 }, () => {
+  it('lives in the project\'s .worktrees directory, hidden from the project\'s git status', async () => {
+    const portal = await project(root, 'tap.example.com')
+    // A sibling of the same name inside the project: the exclude line must hide the ticket directory without hiding this.
+    await mkdir(join(portal.path, 'worktrees'), { recursive: true })
+    await writeFile(join(portal.path, 'worktrees', 'kept.txt'), 'keep\n')
+    const directory = worktreePath(stateDir, 'work-eabd86-abc', portal)
+    expect(directory).toBe(join(portal.path, '.worktrees', 'work-eabd86-abc'))
+    await worktrees.create(portal, directory)
+    expect(await identity(directory)).toEqual({ top: resolve(directory), common: portal.commonDir })
+    // Hidden without touching a tracked file: the anchored line is in the repository's own info/exclude, once.
+    const exclude = await readFile(join(portal.commonDir, 'info', 'exclude'), 'utf8')
+    expect(exclude.split('\n').filter(line => line.trim() === '/.worktrees/')).toHaveLength(1)
+    await worktrees.exclude(portal)
+    expect((await readFile(join(portal.commonDir, 'info', 'exclude'), 'utf8')).split('\n').filter(line => line.trim() === '/.worktrees/')).toHaveLength(1)
+    // The project reports the ticket's checkout as nothing, and the sibling as what it is.
+    expect((await git(portal.path, 'status', '--porcelain')).trim()).toBe('?? worktrees/')
+    const all = await git(portal.path, 'status', '--porcelain', '--untracked-files=all')
+    expect(all).toContain('worktrees/kept.txt')
+    expect(all).not.toContain('.worktrees')
+  })
+
+  it('reports what a worker left in the project\'s main copy', async () => {
+    const portal = await project(root, 'tap.example.com')
+    expect(await worktrees.status(portal)).toEqual([])
+    await writeFile(join(portal.path, 'file.txt'), 'changed in the main copy\n')
+    expect((await worktrees.status(portal)).join('\n')).toContain('file.txt')
+    // The session's directory must be the project's own checkout, or nothing else it reads or writes means anything.
+    await expect(worktrees.verifyCheckout(portal.path, portal)).resolves.toBeUndefined()
+    const other = await project(root, 'shop.example.com')
+    await expect(worktrees.verifyCheckout(other.path, portal)).rejects.toThrow(WorkspaceError)
+    await expect(worktrees.verifyCheckout(join(portal.path, '.worktrees'), portal)).rejects.toThrow(WorkspaceError)
+  })
+
+  it('never removes the project\'s main copy or anything beside a ticket directory', async () => {
+    const portal = await project(root, 'tap.example.com')
+    await writeFile(join(portal.path, 'sibling.txt'), 'keep\n')
+    const directory = worktreePath(stateDir, 'work-abc', portal)
+    await worktrees.create(portal, directory)
+    await mkdir(join(portal.path, '.worktrees', 'nested', 'work-def'), { recursive: true })
+    // Each of these is outside the one layer this module owns, so each is refused and left exactly as it is.
+    for (const path of [portal.path, join(portal.path, '.worktrees'), join(portal.path, '.worktrees', 'nested', 'work-def'),
+      join(root, 'elsewhere'), join(portal.path, 'worktrees')]) expect(await worktrees.remove(path, portal)).toBe(false)
+    expect((await stat(join(portal.path, 'sibling.txt'))).isFile()).toBe(true)
+    expect((await stat(join(portal.path, 'file.txt'))).isFile()).toBe(true)
+    expect((await stat(join(portal.path, '.worktrees', 'nested', 'work-def'))).isDirectory()).toBe(true)
+    expect((await stat(directory)).isDirectory()).toBe(true)
+    expect(await worktrees.remove(directory, portal)).toBe(true)
+    expect(await git(portal.path, 'worktree', 'list', '--porcelain')).not.toContain(directory)
+  })
+
+  it('sweeps only what sits directly in a project\'s .worktrees directory', async () => {
+    const portal = await project(root, 'tap.example.com')
+    const done = worktreePath(stateDir, 'work-done', portal)
+    const orphan = worktreePath(stateDir, 'work-orphan', portal)
+    await worktrees.create(portal, done)
+    await worktrees.create(portal, orphan)
+    await mkdir(join(portal.path, '.worktrees', 'nested', 'work-nested'), { recursive: true })
+    await writeFile(join(portal.path, '.worktrees', 'stray.txt'), 'keep\n')
+    const ended = ticket(done, { project: portal, ended: { at: '2026-01-01T00:00:00.000Z', by: 'executor', outcome: 'completed' },
+      assignments: [{ id: 'a1', state: 'ended', createdAt: '2026-01-01T00:00:00.000Z', report: { state: 'ready', summary: 'done', at: '2026-01-01T00:00:00.000Z' } }] })
+    const report = await worktrees.sweep([ended])
+    expect(report.removed).toEqual([done, orphan].sort())
+    // The project's own copy, the nested directory and the stray file are not this module's, so they stay.
+    expect((await stat(join(portal.path, 'file.txt'))).isFile()).toBe(true)
+    expect((await stat(join(portal.path, '.worktrees', 'nested', 'work-nested'))).isDirectory()).toBe(true)
+    expect((await stat(join(portal.path, '.worktrees', 'stray.txt'))).isFile()).toBe(true)
   })
 })

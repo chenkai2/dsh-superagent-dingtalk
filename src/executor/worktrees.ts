@@ -6,7 +6,7 @@
  * shared with the project it comes from.
  */
 import { realpathSync } from 'node:fs'
-import { mkdir, readdir, rm, stat } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import type { SubprocessOutputReader, SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import { latestReport, liveTicket } from '../core/index.ts'
@@ -57,8 +57,8 @@ export const gitRunner = (subprocess: SubprocessRuntime, stateDir: string): Work
 }
 
 // One definition of the roots, in the module that also reads them for the prompt and the settings page.
-export { worktreesRoot, worktreePath } from '../app/execution-environment.ts'
-import { worktreesRoot } from '../app/execution-environment.ts'
+export { projectWorktreesRoot, worktreesRoot, worktreePath } from '../app/execution-environment.ts'
+import { projectWorktreesRoot, worktreesRoot } from '../app/execution-environment.ts'
 
 export interface WorktreeHost {
   stateDir: string
@@ -74,24 +74,58 @@ const canonical = (path: string): string => {
   try { return realpathSync(path) } catch { /* Not there yet: the directory that holds it decides. */ }
   try { return join(realpathSync(dirname(path)), basename(path)) } catch { return resolve(path) }
 }
-/** Whether `path` is a directory below `root`, which is the only place this module creates or deletes directories. */
+/** Whether `path` is a directory below `root`. */
 const below = (root: string, path: string): boolean => {
   const target = canonical(path)
   return target !== canonical(root) && target.startsWith(canonical(root) + sep)
 }
+/**
+ * Whether `path` is a direct child of `root`, which is the only layer this module creates and deletes. Nothing deeper is
+ * ever its own: a project's `.worktrees` directory holds ticket checkouts, and no path below one of those is a ticket's.
+ */
+const oneBelow = (root: string, path: string): boolean => {
+  const base = canonical(root), target = canonical(path)
+  if (target === base || !target.startsWith(base + sep)) return false
+  return !target.slice(base.length + 1).includes(sep)
+}
+/** The entry that keeps a project's `.worktrees` directory out of its own `git status`, anchored to the project root. */
+const EXCLUDE_LINE = '/.worktrees/'
 
 /**
- * Creates, judges and cleans the directories tickets work in. A ticket with a project gets a worktree of that project,
- * created detached because a branch checked out in the project's main copy cannot be checked out again; a ticket without
- * one gets an empty directory in the same root, which its prepare command may fill.
+ * Creates, judges and cleans the directories tickets work in. A ticket with a project gets a worktree of that project in the
+ * project's own `.worktrees` directory, created detached because a branch checked out in the project's main copy cannot be
+ * checked out again; a ticket without one gets an empty directory in the state directory's worktrees root, which its prepare
+ * command may fill. Only a direct child of one of those two directories is ever created or deleted here.
  */
 export class Worktrees {
   constructor(private readonly host: WorktreeHost) {}
 
-  /** The root all ticket directories live in. */
+  /** The root the directories of tickets without a project live in. */
   root(): string { return worktreesRoot(this.host.stateDir) }
-  /** Whether a directory is one this module creates and deletes; a path elsewhere is a ticket from before the move. */
-  owns(directory: string): boolean { return below(this.root(), directory) }
+  /**
+   * Whether a directory is one this module creates and deletes: a direct child of the root for a ticket without a project, or,
+   * for a ticket with one, a direct child of that project's `.worktrees` directory. A project's main copy, and everything else
+   * beside a ticket's directory, is never this module's to touch.
+   */
+  owns(directory: string, project?: TicketProject): boolean {
+    return oneBelow(this.root(), directory) || (!!project && oneBelow(projectWorktreesRoot(project), directory))
+  }
+  /**
+   * Keeps a project's `.worktrees` directory out of that project's `git status` without touching a tracked file: the anchored
+   * line goes into the repository's own `info/exclude`, which no commit carries. Idempotent, so every launch may ask.
+   * @param project - The project whose tickets work under `.worktrees`.
+   */
+  async exclude(project: TicketProject): Promise<void> {
+    const directory = join(project.commonDir, 'info')
+    const file = join(directory, 'exclude')
+    const current = await readFile(file, 'utf8').catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return ''
+      throw error
+    })
+    if (current.split('\n').some(entry => entry.trim() === EXCLUDE_LINE)) return
+    await mkdir(directory, { recursive: true })
+    await writeFile(file, current.length > 0 && !current.endsWith('\n') ? `${current}\n${EXCLUDE_LINE}\n` : `${current}${EXCLUDE_LINE}\n`, 'utf8')
+  }
   /** The cleanups that failed since this instance was created, for the Executor's log and the tests. */
   failures(): readonly CleanupFailure[] { return this.failed }
   private readonly failed: CleanupFailure[] = []
@@ -113,6 +147,28 @@ export class Worktrees {
     return { state: 'foreign', why: `it is a worktree of ${common ?? 'another repository'}, not of ${project.commonDir}` }
   }
 
+  /**
+   * Throws unless `directory` is the project's own main copy: the ticket's Session starts there, reads the whole project, and
+   * must still be writing nowhere but its worktree, so the checkout it starts in is checked rather than assumed.
+   * @throws WorkspaceError when the directory is not the project's checkout or holds another repository.
+   */
+  async verifyCheckout(directory: string, project: TicketProject): Promise<void> {
+    const top = await this.toplevel(directory)
+    if (!top) throw new WorkspaceError(`The project ${project.name} is not at ${directory}`)
+    if (!sameDirectory(top, project.path)) throw new WorkspaceError(`The ticket session's directory ${directory} is not ${project.name}: it holds ${top}`)
+    const common = await this.commonDir(directory)
+    if (!common || !sameDirectory(common, project.commonDir))
+      throw new WorkspaceError(`The ticket session's directory ${directory} is not ${project.name}'s repository`)
+  }
+  /**
+   * The project's own `git status --porcelain` lines: what a worker changed in the main copy, which is read-only to it. An empty
+   * list is the clean copy every ticket's work should leave behind.
+   * @param project - The project whose main copy is read.
+   */
+  async status(project: TicketProject): Promise<string[]> {
+    const output = await this.git(['-C', project.path, 'status', '--porcelain'], project.path)
+    return output.split('\n').map(line => line.trimEnd()).filter(Boolean)
+  }
   /** Throws unless the directory is ready for this ticket (see `standing`); a launch fails rather than starting somewhere else. */
   async verify(directory: string, project?: TicketProject): Promise<void> {
     const standing = await this.standing(directory, project)
@@ -128,6 +184,10 @@ export class Worktrees {
    * @throws WorkspaceError when the directory holds another worktree, the project has no commit, or git fails.
    */
   async create(project: TicketProject, directory: string, signal?: AbortSignal): Promise<void> {
+    // The directory sits inside the project, so the project must not report it as untracked; asked before the add, so a failed
+    // attempt leaves nothing visible either.
+    await this.exclude(project)
+    await mkdir(dirname(directory), { recursive: true })
     const standing = await this.standing(directory, project)
     // A path that already is this project's worktree is reused: an earlier attempt, or a prepare command, created it.
     if (standing.state === 'ready') return
@@ -154,8 +214,9 @@ export class Worktrees {
    * `agent/<name>` branch a ticket commits to and its pull request comes from.
    */
   async remove(directory: string, project?: TicketProject, signal?: AbortSignal): Promise<boolean> {
-    // Outside the root is never this module's to delete, such as a ticket recorded before directories moved there.
-    if (!this.owns(directory)) return false
+    // Only a directory this module creates may be deleted: a direct child of the root, or of a project's own `.worktrees`
+    // directory. Anything else, a project's main copy included, is never this module's to remove.
+    if (!this.owns(directory, project)) return false
     // The identity judged before a launch is judged again here: a cleanup has only a path to go on, and deleting another
     // project's worktree would throw away work no record of this ticket mentions. A refusal is reported, never forced.
     if (project) {
@@ -184,8 +245,10 @@ export class Worktrees {
    * (see `expired`). Never touches a work root outside the worktrees root, so tickets recorded before the move keep theirs.
    */
   async release(ticket: Ticket, now: Date = new Date()): Promise<void> {
-    const directory = ticket.execution?.directory
-    if (!directory || !below(this.root(), directory)) return
+    // Only the worktree is ever removed: a project Ticket's `directory` is the project's own main copy, which is never this
+    // module's to delete.
+    const directory = ticket.execution?.writeRoot ?? ticket.execution?.directory
+    if (!directory || !this.owns(directory, ticket.project)) return
     if (!await this.exists(directory) || !await this.expired(ticket, directory, now)) return
     await this.remove(directory, ticket.project).catch((error: unknown) => { this.fail(directory, error) })
   }
@@ -204,8 +267,9 @@ export class Worktrees {
     const failed: CleanupFailure[] = []
     const owned = new Map<string, Ticket>()
     for (const ticket of tickets) {
-      const directory = ticket.execution?.directory
-      if (directory && below(root, directory)) owned.set(resolve(directory), ticket)
+      // The worktree, never the main copy a project Ticket's Session starts in.
+      const directory = ticket.execution?.writeRoot ?? ticket.execution?.directory
+      if (directory && this.owns(directory, ticket.project)) owned.set(resolve(directory), ticket)
     }
     const drop = async (directory: string, project?: TicketProject): Promise<void> => {
       try {
@@ -224,14 +288,25 @@ export class Worktrees {
       if (owner && (!same(owner) || !await this.expired(owner, directory, now))) continue
       await drop(directory, owner?.project)
     }
-    // The registrations: a project whose worktree directory was deleted keeps one until that project is pruned. Only the
-    // registrations below the root are cleared; a checkout elsewhere is the operator's.
+    // A project's own `.worktrees` directory: the directories and registrations directly inside it, and nothing else, so a
+    // project's main copy and every directory beside it stay the operator's. A directory whose registration is gone is still
+    // the residue of this project's tickets, so the directory listing is read as well as the registrations.
     for (const project of distinctProjects(tickets)) {
+      const projectRoot = projectWorktreesRoot(project)
       try {
         await this.git(['-C', project.path, 'worktree', 'prune'], project.path)
         const listed = await this.git(['-C', project.path, 'worktree', 'list', '--porcelain'], project.path)
-        for (const path of registrations(listed)) {
-          if (!below(root, path) || !await this.exists(path)) continue
+        const paths = new Set(registrations(listed).filter(path => oneBelow(projectRoot, path)))
+        // A registration survives a directory's removal; the directory's own `.git` file is what says a directory left without
+        // one was a ticket's worktree. Anything else in the project's `.worktrees` directory, a stray file or a directory the
+        // operator put there, is not this module's to delete.
+        for (const name of await readdir(projectRoot).catch(() => [] as string[])) {
+          if (name.startsWith('.')) continue
+          const path = join(projectRoot, name)
+          if ((await stat(join(path, '.git')).catch(() => undefined))?.isFile()) paths.add(path)
+        }
+        for (const path of paths) {
+          if (!oneBelow(projectRoot, path) || !await this.exists(path)) continue
           const owner = owned.get(resolve(path))
           if (owner && (!same(owner) || !await this.expired(owner, path, now))) continue
           await drop(path, project)

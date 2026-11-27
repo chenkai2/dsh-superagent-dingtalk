@@ -22,13 +22,16 @@ export interface Variable { key: string; value: string; description: Localized; 
  * there, so this root no longer places one and the `executor.directory` setting behind it no longer affects a Ticket.
  */
 export const executionRoot = (settings: Settings, stateDir: string): string => settings.executor.directory || join(stateDir, 'work')
-/**
- * The root every ticket directory lives in: `<stateDir>/worktrees`, never the work root that holds the projects
- * themselves, so a ticket's checkout cannot be mistaken for the operator's.
- */
+/** The root a ticket without a project works under: `<stateDir>/worktrees`, never the work root that holds the projects. */
 export const worktreesRoot = (stateDir: string): string => join(stateDir, 'worktrees')
-/** The directory one ticket works in: its execution name under `worktreesRoot`. */
-export const worktreePath = (stateDir: string, name: string): string => join(worktreesRoot(stateDir), name)
+/** The directory a project's tickets live in: `<project.path>/.worktrees`, beside the project's main copy and never the copy. */
+export const projectWorktreesRoot = (project: { path: string }): string => join(project.path, '.worktrees')
+/**
+ * The directory one ticket works in: a project's own `.worktrees` directory when it has one, so the ticket's checkout sits
+ * with the repository it belongs to, and the state directory's root when it has none.
+ */
+export const worktreePath = (stateDir: string, name: string, project?: { path: string } | undefined): string =>
+  project ? join(projectWorktreesRoot(project), name) : join(worktreesRoot(stateDir), name)
 
 /** Lists all declared variables grouped by owner; `enabled` is false for Sources that are currently switched off. */
 export function declaredVariables(sources: SourceRegistry, settings?: Settings): { owner: string; enabled: boolean; variables: readonly VariableSpec[] }[] {

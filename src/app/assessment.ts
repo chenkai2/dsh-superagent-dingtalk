@@ -64,6 +64,8 @@ export interface AssessorHost {
   readonly store: Pick<Store, 'triggers' | 'settings' | 'read'>
   /** Where a bot list that hides a person's requests is reported. */
   readonly logger: Pick<Context['logger'], 'warn'>
+  /** The project a request's own words name, through the index's one resolver; `undefined` when they name none or several. */
+  readonly project: (text: string) => string | undefined
   settings(): Settings
   /** Whether processing is paused, which holds candidate deliveries. */
   paused(): boolean
@@ -287,7 +289,7 @@ export class MasterAssessor implements Assessor {
     // earns, exactly as the routing path does, and both paths decide through `decideAddressed`. Only an inferred candidate is
     // assessed at all, so this is where its ignore would otherwise record a Decision with no Ticket.
     const addressed = result.decision === 'ignore'
-      ? decideAddressed({ engine: this.host.engine, store: this.host.store, logger: this.host.logger },
+      ? decideAddressed({ engine: this.host.engine, store: this.host.store, logger: this.host.logger, project: this.host.project },
         candidate.triggers.find(item => item.id === triggerId)!, candidate.evalId)
       : undefined
     if (addressed) {
