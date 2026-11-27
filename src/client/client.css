@@ -388,3 +388,12 @@ a.dt-btn, a.dt-btn:hover { text-decoration: none; }
 .dt-mount-failures { display: flex; flex-direction: column; gap: 8px; margin: 0; padding-left: 18px; }
 .dt-mount-failure-why { display: block; color: var(--dsh-text-secondary); font-size: 12px; line-height: 1.5; }
 .dt-mount-failure-reason { white-space: pre-wrap; }
+.dt-project { display: inline-flex; align-items: center; max-width: 100%; min-width: 0; }
+.dt-project .dt-tag { max-width: 100%; min-width: 0; }
+.dt-project-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dt-project-basis { flex: none; opacity: .7; }
+.dt-project-hint { position: relative; z-index: 1; display: inline-flex; flex: none; margin-left: 2px; }
+.dt-project-correction { color: var(--dsh-text-secondary); font-size: 12px; }
+.dt-project-index { display: flex; flex-direction: column; gap: 8px; }
+.dt-project-index-problem { white-space: pre-wrap; }
+.dt-diff-names { font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
