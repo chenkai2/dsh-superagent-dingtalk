@@ -319,3 +319,15 @@ it('reads each ticket a page\'s follow-ups reached once, and nothing for a messa
   expect(followupOwners(store.triggers.get('f3')!, records)).toEqual([])
   expect([records.tickets.get, records.threads.get].map(read => read.mock.calls.length)).toEqual([0, 0])
 })
+
+it('projects a Ticket\'s project and the corrections people made into its summary', () => {
+  const ticket = ticketSummary({
+    id: 'ticket-1', title: '改按钮文案', createdAt: '2026-09-09T00:00:00.000Z', updatedAt: '2026-09-09T00:00:00.000Z',
+    mandate: { strength: 'explicit', policyVersion: 'p1', basis: {}, actor: { source: 'feishu', id: 'ou_a' }, scope: 'x' },
+    channels: [], assignments: [], inputs: [], undelivered: [], origin: { triggerId: 'om_1', triggerIds: ['om_1'] },
+    project: { name: 'widgets', path: '/srv/projects/widgets', commonDir: '/srv/projects/widgets/.git', basis: 'named' },
+    projectCorrections: [{ from: 'widgets', to: 'cart', by: { source: 'feishu', id: 'ou_a' }, triggerId: 'om_2', at: '2026-09-09T01:00:00.000Z' }],
+  } as never)
+  expect(ticket.project).toEqual({ name: 'widgets', path: '/srv/projects/widgets', commonDir: '/srv/projects/widgets/.git', basis: 'named' })
+  expect(ticket.projectCorrections).toEqual([expect.objectContaining({ from: 'widgets', to: 'cart' })])
+})

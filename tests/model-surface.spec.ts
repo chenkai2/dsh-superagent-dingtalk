@@ -39,7 +39,9 @@ interface Skill { name: string; description: string; content: string }
  * This is a deliberate ratchet: the orchestrator limit sits within a few dozen characters of what the two roles now need, so
  * adding a word means compressing another one first. A limit with room to spare reads like an invitation to add a tool.
  */
-const BUDGET: Record<Role, number> = { orchestrator: 59_400, worker: 40_500 }
+// The orchestrator's budget includes the `project` field the two accept paths now document; a field of the model-visible
+// schemas costs characters, and leaving it undescribed costs the project itself.
+const BUDGET: Record<Role, number> = { orchestrator: 60_600, worker: 40_500 }
 const PROMPTS = 'prompts/, skills/', TOOLS = 'src/app/tools/', SESSIONS = 'src/app/sessions.ts'
 const NOTICES = 'src/app/notices.ts', LINKS = 'src/app/links.ts', ASSESSMENT = 'src/app/assessment.ts'
 const EXECUTOR = 'src/executor/dsh.ts', ERRORS = 'src/core/errors.ts'
