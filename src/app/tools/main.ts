@@ -10,6 +10,7 @@ import { actorAliases, listedBot } from '../../policy.ts'
 import { AssessmentSchema, EvalReadSchema, WorktreeNameSchema, type MasterAssessor } from '../assessment.ts'
 import { ticketCard } from '../cards.ts'
 import { PromptConfigSchema, savePrompts, type Prompts } from '../prompts.ts'
+import { currentProjectIndex } from '../projects.ts'
 import { readResource, type MainResourceHost, type ResourceHost } from '../resources.ts'
 import type { Sessions } from '../sessions.ts'
 import type { Settings } from '../settings.ts'
@@ -259,6 +260,20 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
     readTool('Read one page of a resource the resource parameter lists, such as the ticket list or a ticket. Follow next_offset, and next_resource where a page names one.',
       false, (resource, offset, limit, signal) => readResource(resources, resource, offset, limit, undefined, signal)),
     routeTool(host),
+    tool({
+      name: 'orchestrator_projects',
+      description: 'List indexed repositories by keyword over name, path, remote or alias.',
+      schema: z.object({ keyword: z.string().trim().max(200).optional() }).strict(),
+      execute: async ({ keyword }) => {
+        const index = currentProjectIndex(host.context)
+        if (!index) return { generatedAt: null, root: '', generating: false, problem: 'Project index is not available in this process', projects: [] }
+        const state = index.state()
+        return { generatedAt: state.generatedAt, root: state.root, generating: state.generating,
+          ...state.problem ? { problem: state.problem } : {},
+          projects: index.list(keyword ?? '').map(({ name, path, remote, commonDir, aliases, matched }) => ({ name, path,
+            ...remote ? { remote } : {}, commonDir, ...aliases ? { aliases } : {}, matched })) }
+      },
+    }),
     tool({
       name: 'orchestrator_ticket_retry',
       description: 'Start a new assignment on an explicit human request to retry a ticket whose worker reported failed or blocked, or whose input was not delivered; the stalled one ends.',

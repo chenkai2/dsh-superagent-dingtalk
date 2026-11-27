@@ -9,6 +9,7 @@ import type { SettingsView } from './views/settings.ts'
 import type { SourceStatusView } from './views/sources.ts'
 import type { DecisionListView, SearchView, ThreadDetailView, ThreadListView } from './views/threads.ts'
 import type { TicketListView } from './views/tickets.ts'
+import type { ProjectIndexState } from './projects.ts'
 
 export const TICKET_FILTERS = ['open', 'person', 'working', 'idle', 'ended'] as const
 export const THREAD_FILTERS = ['subscribed', 'evaluating', 'recent', 'all'] as const
@@ -21,6 +22,10 @@ type Delivery = 'injected' | 'pending'
 import type { SourceCheck } from '../sources/kind.ts'
 
 export interface Api {
+  /** The project index's last snapshot, its skipped checkouts, its problem, and its difference from the one before. */
+  'GET projects': { response: ProjectIndexState }
+  /** Start a rescan and answer at once with `generating: true`; poll `GET projects` for the new snapshot. */
+  'POST projects/refresh': { response: ProjectIndexState }
   'GET state': { response: StateView }
   'GET overview': { response: OverviewView }
   'GET search': { query: { q: string }; response: SearchView }
