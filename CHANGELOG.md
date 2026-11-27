@@ -3,6 +3,17 @@
 All notable changes to `@chenkai114/dsh-superagent-dingtalk`. This project publishes from a GitHub Release,
 so a version here without a link is one whose release was superseded before publishing.
 
+## 0.0.38 — 2026-11-27
+
+### Fixed
+
+- **被 @ 的消息在被判成「推断候选」时仍会消失**：准入可以把一条 @ 了 agent 的消息当作推断候选，评估
+  路径于是还能把它忽略——这是 0.0.37 只守住 `orchestrator_route` 留下的另一个入口。现在两条路径共用
+  同一个判定（`src/app/addressed.ts` 的 `decideAddressed`），命中即建单，模型没有选择余地。
+  人的 @ 本身就是开单授权，因此 accept 带一个**只由代码设置**的 `forced` 标记，模型无法构造它。
+- **已结束的工单不再参与归属判定**：`deferred` 只列 open 的工单。此前两张早已结束的工单会让新消息
+  被判「有歧义」，进而被评估忽略。
+
 ## 0.0.37 — 2026-11-27
 
 ### Added
