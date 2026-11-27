@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { UserError, followupOwners, key, reasonText, type Decision, type DecisionKind, type EngineForMainSession, type EngineForPeople }
   from '../../core/index.ts'
 import { IM_WORDS, NOTE_WORDS, isChinese, wordCount } from '../../infra/text.ts'
+import { listedBot } from '../../policy.ts'
 import { AssessmentSchema, EvalReadSchema, WorktreeNameSchema, type MasterAssessor } from '../assessment.ts'
 import { ticketCard } from '../cards.ts'
 import { PromptConfigSchema, savePrompts, type Prompts } from '../prompts.ts'
@@ -93,12 +94,12 @@ const bareLine = (line: string): string =>
   line.replace(/<@[^>\n]*>/g, ' ').replace(/(?:^|\s)@[\p{L}\p{N}_.-]+/gu, ' ').replace(/\s+/g, ' ').trim()
 /**
  * The request's own words as an accepted ticket's title: whitespace collapsed and cut to the `accept` title limit. A message
- * may address the agent on a line of its own, so the title is the first line that carries words without those mentions, and
- * a message that is only a mention keeps its raw first line rather than becoming an empty title.
+ * may address the agent on a line of its own, so the title is the first line that is not empty once those mentions and
+ * whitespace are removed, and a message that is only a mention keeps its whole text rather than becoming an empty title.
  */
 function addressedTitle(text: string): string {
   const lines = text.split('\n')
-  const title = lines.map(bareLine).find(Boolean) ?? (lines[0] ?? '').replace(/\s+/g, ' ').trim()
+  const title = lines.map(bareLine).find(Boolean) ?? text.replace(/\s+/g, ' ').trim()
   // The limit counts UTF-16 code units, so a cut inside a surrogate pair would leave the title with half a glyph.
   return title.slice(0, 200).replace(/[\uD800-\uDBFF]$/, '')
 }
@@ -111,13 +112,11 @@ function addressedAcknowledgement(text: string, title: string): string {
   if (wordCount(prefix + title) <= IM_WORDS) return prefix + title
   const chars = Array.from(title)
   const fits = (length: number): boolean => wordCount(`${prefix}${chars.slice(0, length).join('')}…`) <= IM_WORDS
-  let low = 0, high = chars.length
-  while (low < high) {
-    const middle = Math.ceil((low + high) / 2)
-    if (fits(middle)) low = middle
-    else high = middle - 1
-  }
-  return `${prefix}${chars.slice(0, low).join('')}…`
+  // Every length is tried because the count is not monotone in it: a longer text can merge segments and count fewer words
+  // (`我会` is two, `我会去` one), so a search that stops at the first length that does not fit gives up glyphs it could quote.
+  let best = 0
+  for (let length = 1; length <= chars.length; length++) if (fits(length)) best = length
+  return `${prefix}${chars.slice(0, best).join('')}…`
 }
 /**
  * Carry out one routing decision as its Engine command, in a transaction of its own. `decided` holds the Triggers that this
@@ -154,15 +153,18 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
       // A person who mentioned the agent asked for something, so the code never lets an ignore drop it: it runs the accept the
       // trigger already supplies a title and acknowledgement for. Model guidance alone cannot hold this rule, because whether
       // a message matches a rule is a judgment about the rules, while whether a person asked is a fact about the message.
-      // `addressed` alone is not that fact: a bot's mention is an inferred candidate the rules decide, so it stays ignorable.
+      // `addressed` alone is not that fact: a bot's mention is an inferred candidate the rules decide, so it stays ignorable,
+      // and a sender the Source lists as a bot is one whatever the Source reports about `human` (docs/007, docs/008).
       const trigger = host.store.triggers.get(item.trigger_id)
-      if (trigger?.human && trigger.addressed) {
+      if (trigger?.human && trigger.addressed && !listedBot(host.store.settings(), trigger.actor)) {
         const title = addressedTitle(trigger.text)
-        const acknowledgement = addressedAcknowledgement(trigger.text, title)
+        // A message of whitespace alone has no request to name, so it is accepted with no acknowledgement rather than
+        // posting a bare "Received: ".
+        const acknowledgement = title === '' ? {} : { acknowledgement: addressedAcknowledgement(trigger.text, title) }
         const before = host.store.triggers.disposition(item.trigger_id)?.decisionId
         try {
           const decision = host.engine.decide(item.trigger_id, { kind: 'accept', title, scope: title, reason: { code: 'explicitRouted' },
-            acknowledgement,
+            ...acknowledgement,
             name: `work-${createHash('sha1').update(item.trigger_id).digest('hex').slice(0, 6)}`,
             // Recorded on the Decision, so the fallback stays visible after the tool result is gone.
             audit: { acceptedAddressed: true } })

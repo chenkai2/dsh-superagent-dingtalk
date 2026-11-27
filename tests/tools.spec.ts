@@ -17,6 +17,17 @@ const words = (count: number) => Array.from({ length: count }, () => 'word').joi
 const markdowns = () => vi.mocked(Commands.prototype.lark).mock.calls.map(([args]) => args)
   .filter(args => args.includes('--markdown')).map(args => args[args.indexOf('--markdown') + 1])
   .filter((text): text is string => text !== undefined)
+/** The most code points of `title` that an acknowledgement quoting it could hold, tried at every length. */
+const quotable = (title: string): number => {
+  const chars = Array.from(title)
+  let best = 0
+  for (let length = 0; length <= chars.length; length++) {
+    if (wordCount(`收到：${chars.slice(0, length).join('')}…`) <= IM_WORDS) best = length
+  }
+  return best
+}
+/** How many code points an acknowledgement quoted: its text between the prefix and the closing ellipsis. */
+const quoted = (acknowledgement: string): number => Array.from(acknowledgement.slice('收到：'.length)).length - 1
 const read = (resource: string, page: { offset?: number; limit?: number } = {}) =>
   h.runTool(h.runtime.masterId, 'orchestrator_read', { resource, ...page })
 
@@ -322,6 +333,31 @@ it('still ignores a message a bot addressed to the agent, because only a person 
   expect(h.runtime.store.tickets.list()).toEqual([])
 })
 
+it('leaves an addressed message ignorable when the Source lists its sender as a bot, whatever it says about the sender', async () => {
+  // A Source that cannot report a sender type marks robots as people (the DingTalk Stream callback, docs/008), so the bot
+  // list, not `human`, must decide whether the sender could have asked for anything. Only `(cli|ou)_…` ids fit that list,
+  // so this lists a person's id to reach the condition the guard tests.
+  const seeded = h.runtime.store.settings()
+  h.runtime.store.saveSettings({ ...seeded, policy: { ...seeded.policy,
+    sources: { ...seeded.policy.sources, feishu: { ...seeded.policy.sources.feishu!, bots: [{ id: 'ou_alice', name: 'Alice bot' }] } } } })
+  const trigger = feishu('19', '@bot 部署完成')
+  h.runtime.receive(trigger); await h.runtime.idle()
+  expect(await h.route({ kind: 'ignore', trigger_id: trigger.id, reason: 'A bot status.' })).toMatchObject({ decision: 'ignore' })
+  expect(h.runtime.store.tickets.list()).toEqual([])
+})
+
+it('posts no acknowledgement when an accepted addressed message has no words at all', async () => {
+  // The title falls back to the whole message, so it is empty only for a message of whitespace. An acknowledgement of just
+  // its prefix ("Received: ") would say nothing, so this posts none.
+  const blank = feishu('20', '   ')
+  h.runtime.receive(blank); await h.runtime.idle()
+  const accepted = await h.route({ kind: 'ignore', trigger_id: blank.id, reason: 'No words.' })
+  const ticket = h.runtime.store.tickets.get((accepted.ticket as { ticket_id: string }).ticket_id)!
+  expect(ticket.title).toBe('')
+  await h.runtime.idle()
+  expect(h.runtime.store.replyStatus(key('ack', blank.id))).toBeUndefined()
+})
+
 it('titles an accepted addressed message by its own first line without the mention, and keeps that line when only a mention is left', async () => {
   const cases: [id: string, text: string, title: string][] = [
     // A mention markup the Source may hand over, and the rest of the message never joins the title.
@@ -330,9 +366,13 @@ it('titles an accepted addressed message by its own first line without the menti
     ['11', '@bot 发邮件给 a@b.com 说明一下', '发邮件给 a@b.com 说明一下'],
     // A mention alone on the first line leaves the request on the next one, which names the ticket instead.
     ['12', '@bot\n帮我把副标题改成浏览网页', '帮我把副标题改成浏览网页'],
-    // A message that is only a mention keeps its raw first line, so the ticket never holds an empty title.
+    // The rule is the first non-empty line, not the first line of words: a punctuation-only line names the ticket.
+    ['21', '@bot\n？？\n真正的请求', '？？'],
+    // A message that is only a mention keeps its text, so the ticket never holds an empty title, also when a blank
+    // first line precedes the mention.
     ['13', '@bot', '@bot'],
     ['14', '<@ou_member>', '<@ou_member>'],
+    ['17', '\n@bot', '@bot'],
   ]
   for (const [id, text, title] of cases) {
     const trigger = feishu(id, text)
@@ -356,6 +396,24 @@ it('keeps the acknowledgement of a long addressed request within the IM word lim
   expect(wordCount(acknowledgement)).toBeLessThanOrEqual(IM_WORDS)
   // The cut says so rather than ending mid-sentence.
   expect(acknowledgement.endsWith('…')).toBe(true)
+  // The budget is spent, not reserved: the quote holds the most glyphs that still fit, so moving the limit from inclusive
+  // to exclusive shortens it. Asserting the whole length, not the word count, keeps this independent of how one Node
+  // version's segmentation counts this exact string.
+  const title = h.runtime.store.tickets.get((accepted.ticket as { ticket_id: string }).ticket_id)!.title
+  expect(quoted(acknowledgement)).toBe(quotable(title))
+})
+
+it('quotes past a segmentation dip, where a longer text counts fewer words', async () => {
+  // `我会` segments as two words and `我会去` as one, so a quote that stopped at the first length that no longer fits would
+  // give up glyphs it could still hold.
+  const trigger = feishu('22', `@bot ${'改'.repeat(98)}我会去${'改'.repeat(120)}`)
+  h.runtime.receive(trigger); await h.runtime.idle()
+  const accepted = await h.route({ kind: 'ignore', trigger_id: trigger.id, reason: 'A long title.' })
+  await h.runtime.idle()
+  const acknowledgement = markdowns().find(text => text.startsWith('收到：')) ?? ''
+  expect(wordCount(acknowledgement)).toBeLessThanOrEqual(IM_WORDS)
+  const title = h.runtime.store.tickets.get((accepted.ticket as { ticket_id: string }).ticket_id)!.title
+  expect(quoted(acknowledgement)).toBe(quotable(title))
 })
 
 it('cuts an over-long title without leaving half a surrogate pair', async () => {
