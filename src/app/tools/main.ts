@@ -3,8 +3,9 @@ import { createHash } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { z } from 'zod'
-import { UserError, followupOwners, key, reasonText, type Decision, type DecisionKind, type EngineForMainSession, type EngineForPeople,
-  type Trigger } from '../../core/index.ts'
+import { UserError, followupOwners, key, learnProjectAlias, liveTicket, readLearnedProjects, reasonText, type Decision, type DecisionKind,
+  type EngineForMainSession, type EngineForPeople, type Trigger } from '../../core/index.ts'
+import { KV } from '../../kv.ts'
 import { IM_WORDS, NOTE_WORDS, isChinese, wordCount } from '../../infra/text.ts'
 import { actorAliases, listedBot } from '../../policy.ts'
 import { AssessmentSchema, EvalReadSchema, WorktreeNameSchema, type MasterAssessor } from '../assessment.ts'
@@ -21,8 +22,8 @@ const RoutingNoteSchema = z.string().trim()
   .describe(`Optional routing background or explicit human constraint, at most ${NOTE_WORDS} words. Never add implementation instructions or replace the original source.`)
 export interface MainToolsHost {
   readonly context: Context
-  readonly engine: Pick<EngineForMainSession, 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note'> & EngineForPeople
-  readonly store: Pick<Store, 'tickets' | 'triggers' | 'threads' | 'atomic' | 'replyStatus' | 'settings'>
+  readonly engine: Pick<EngineForMainSession, 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note' | 'projectCorrect'> & EngineForPeople
+  readonly store: Pick<Store, 'tickets' | 'triggers' | 'threads' | 'atomic' | 'replyStatus' | 'settings' | 'get' | 'set'>
   readonly prompts: Pick<Prompts, 'preview' | 'save'>
   readonly sessions: Pick<Sessions, 'status' | 'notify' | 'delivery' | 'modelRetry'>
   readonly settings: Pick<Settings, 'view' | 'block' | 'save' | 'pause' | 'sync'>
@@ -259,6 +260,57 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
     readTool('Read one page of a resource the resource parameter lists, such as the ticket list or a ticket. Follow next_offset, and next_resource where a page names one.',
       false, (resource, offset, limit, signal) => readResource(resources, resource, offset, limit, undefined, signal)),
     routeTool(host),
+    tool({
+      name: 'orchestrator_ticket_project_correct',
+      description: 'A person said the ticket\'s project is wrong: record what they named, stop the work for good, and tell their conversation. Use this instead of a plain stop. `project` must be a phrase from their own message, never one you supply. Sending the request again continues there.',
+      schema: z.object({
+        ticket_id: z.string(),
+        // Bounded here as well as clipped in the notice: a name the Channel cannot carry would leave the person with no word
+        // about what was recorded, and the row permanent.
+        project: z.string().trim().min(1).max(60).describe('The project as that message spells it, never a path.'),
+        trigger_id: z.string().describe('The message that corrects the project.'),
+      }).strict(),
+      execute: async args => {
+        const trigger = host.store.triggers.get(args.trigger_id)
+        if (!trigger) throw new UserError('unknownTrigger')
+        // The phrase has to be the person's own: a name the model supplied would make the record a claim about the model.
+        if (!trigger.text.toLowerCase().includes(args.project.toLowerCase())) {
+          throw new UserError('notAdmissible', { reason: `that message does not name ${args.project}` })
+        }
+        const learnedKey = KV.projects.learned
+        const markerKey = KV.projects.corrected(args.ticket_id, args.trigger_id)
+        // The ticket's own record and the alias it teaches commit together: a crash between them would leave a correction
+        // that teaches nothing, and the next request of that kind would repeat the mistake.
+        const result = host.store.atomic(() => {
+          const learned = host.engine.projectCorrect(args.ticket_id, { project: args.project, triggerId: args.trigger_id, by: trigger.actor })
+          const known = host.store.get(learnedKey)
+          const recorded = !learned.learn || host.store.get(markerKey) !== undefined
+          if (!recorded) {
+            host.store.set(markerKey, { ticket: args.ticket_id, triggerId: args.trigger_id, project: args.project, by: trigger.actor,
+              at: learned.correction.at })
+            // The phrase the person used is what a later request is matched by; the project index resolves it to a canonical
+            // name, which is this same phrase until the index says otherwise.
+            host.store.set(learnedKey, learnProjectAlias(known, { alias: args.project, project: args.project, ticket: args.ticket_id,
+              by: trigger.actor, triggerId: args.trigger_id, at: learned.correction.at }, trigger.text))
+          }
+          return { learned, alias: readLearnedProjects(host.store.get(learnedKey)) }
+        })
+        host.requestPass()
+        // The learned map keys phrases in lower case, so a name written another way reads the same entry.
+        const alias = args.project.toLowerCase()
+        const ambiguous = result.alias.ambiguous.includes(alias)
+        return {
+          corrected: result.learned.corrected,
+          stopped: result.learned.stopped,
+          ticket_id: args.ticket_id,
+          project: args.project,
+          learned: { alias, ...(ambiguous ? {} : { project: result.alias.resolved[alias] ?? args.project }), ambiguous },
+          // A phrase two people named different projects for is nobody's to settle here: say so, rather than pick one.
+          ...ambiguous ? { note: `People named ${alias} for more than one project. It resolves to nothing until a person decides, so ask which one and do not route by it.` } : {},
+          ...liveTicket(result.learned.ticket) ? {} : { ticket: ticketCard(result.learned.ticket) },
+        }
+      },
+    }),
     tool({
       name: 'orchestrator_ticket_retry',
       description: 'Start a new assignment on an explicit human request to retry a ticket whose worker reported failed or blocked, or whose input was not delivered; the stalled one ends.',

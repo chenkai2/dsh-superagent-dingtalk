@@ -59,6 +59,9 @@ worker 系统提示里出现过「MCP resource servers … list_mcp_resources」
 - **合并后必须接线的一处（否则 §7.1 闭环断掉）**：#5 的 `ProjectIndexOptions.learned` 是可选注入、生产装配点没人传；
   #7 提供 `readLearnedProjects()`。两条合并后要在 Runtime 组装 `ProjectIndex` 处注入 adapter，否则人工纠正学到的别名永远不生效。
 - **#7 的「唯一项目才执行」暂用子串校验**（索引不在它的分支上）。#5 合入后改成调用 `resolveProject`，让 `basis` 与别名解析统一。
+  接上 resolver 时**必须一次性清理已写错的别名行**（短语不是项目名、或恰好遮蔽了更长的项目名，例如 `shop` 盖住 `shop-uni`），
+  并同步删掉 `project-corrected` marker，否则同一条消息无法重新教一遍。同一处把 `recordedProject` 的鸭子类型读法
+  （`'project' in ticket`）换成 `Ticket.project` 的字段读法。
 - 面板卡片尚不渲染 `projectCorrections`（`src/app/cards.ts` 不在 #7 文件域），歧义目前只体现在工具结果与库里。
 
 ## 已知边界（接受，不再当缺陷）

@@ -8,7 +8,7 @@ import { Assignments, type WorkerReport } from './assignments.ts'
 import { Evals, type Outcome } from './evals.ts'
 import { Intake, type ReceiveResult } from './intake.ts'
 import { Replies, type Reply, type ReplyRequest } from './replies.ts'
-import { Tickets } from './tickets.ts'
+import { Tickets, type ProjectCorrectionRequest, type ProjectCorrectionResult } from './tickets.ts'
 
 export type { EngineOptions } from './part.ts'
 export type { WorkerReport } from './assignments.ts'
@@ -164,6 +164,15 @@ export class Engine {
    * @throws UserError when the ticket is unknown, has ended, or is not retryable.
    */
   retryTicket(ticketId: string): Ticket { return this.repo.atomic(() => this.tickets.retry(ticketId)) }
+  /**
+   * A person corrects a ticket's project: the correction is appended, the work stops for good, and the conversation is told
+   * what was recorded instead (see `Tickets.correctProject`).
+   * @throws UserError when the ticket or message is unknown, the message came from a bot, or the Policy does not admit its
+   * sender as an explicit one.
+   */
+  projectCorrect(ticketId: string, request: ProjectCorrectionRequest): ProjectCorrectionResult {
+    return this.repo.atomic(() => this.tickets.correctProject(ticketId, request))
+  }
 
   // The Executor
 
@@ -261,7 +270,8 @@ export class Engine {
 /** What Sources ask and tell the Engine. */
 export type EngineForSources = Pick<Engine, 'receive' | 'bindThread' | 'threadClosed'>
 /** What the main Session asks of the Engine. */
-export type EngineForMainSession = Pick<Engine, 'candidate' | 'candidateDelivered' | 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note'>
+export type EngineForMainSession = Pick<Engine, 'candidate' | 'candidateDelivered' | 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note'
+  | 'projectCorrect'>
 /** What people ask of the Engine, through the panel or the main Session. */
 export type EngineForPeople = Pick<Engine, 'stopTicket' | 'retryTicket' | 'reevaluate' | 'unsubscribe' | 'dismiss'>
 /** What Settings tells the Engine. */

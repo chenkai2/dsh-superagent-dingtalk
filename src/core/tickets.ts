@@ -2,12 +2,103 @@
 import { key } from './ids.ts'
 import { UserError } from './errors.ts'
 import { latestAssignment, latestReport, liveTicket, readUntil, runningAssignment, settled, threadKey, waitsForPerson } from './model.ts'
-import type { Assignment, ChannelRef, Evaluation, Follow, Mandate, PolicyEffect, ThreadRef, Ticket, TicketEndBy, TicketInput, TicketOutcome,
-  Trigger, TriggerDisposition } from './model.ts'
+import type { ActorRef, Assignment, ChannelRef, Evaluation, Follow, Mandate, PolicyEffect, ProjectCorrection, ThreadRef, Ticket,
+  TicketEndBy, TicketInput, TicketOutcome, Trigger, TriggerDisposition } from './model.ts'
 import type { AssessmentOutcome } from './ports.ts'
 import { EnginePart, type EngineOptions } from './part.ts'
 import type { Replies } from './replies.ts'
 import { canRetry } from './stage.ts'
+
+/**
+ * An alias people's corrections taught, which the project index resolves later requests with: `project` is the one project the
+ * alias names, and absent while it contradicts a hand-maintained alias, which leaves the judgement to a person.
+ */
+export interface LearnedProjectAlias {
+  /** The phrase a person used, lower-cased, which a later request of the same kind is matched by. */
+  alias: string
+  /** The project it names; absent while a hand-maintained alias says another and a person has yet to settle which holds. */
+  project?: string
+  /** What last decided `project`: a person's correction, or the hand-maintained alias file when nobody corrected it. */
+  source: 'human-correction' | 'hand-maintained'
+  /**
+   * The hand-maintained alias this phrase was given, kept while it disagrees with what people said. Corrections do not
+   * overwrite it: the file is a person's own words, and a phrase a model extracted must not silently outrank it.
+   */
+  prior?: { project: string; source: 'hand-maintained' }
+  /** Every person and message that taught it, oldest first, so a correction that was overruled stays readable. */
+  sources: { project: string; by: ActorRef; ticket: string; triggerId: string; at: string; evidence: string }[]
+  ambiguous?: true
+}
+/** The record that a correction was learned, so a replayed message learns it once; its value says where it came from. */
+export interface ProjectCorrectionRecord { ticket: string; triggerId: string; project: string; by: ActorRef; at: string }
+/** A person's correction of a ticket's project, and the message that said it. */
+export interface ProjectCorrectionRequest { project: string; triggerId: string; by: ActorRef }
+/** What `Tickets.correctProject` did, and whether the tool that called it still owes the alias its record. */
+export interface ProjectCorrectionResult {
+  /** The ticket after the command; unchanged when the message repeated a correction or the ticket had already ended. */
+  ticket: Ticket
+  /** The correction this message states; the one recorded the first time when the message repeats. */
+  correction: ProjectCorrection
+  /** Whether this call appended the correction to the ticket. */
+  corrected: boolean
+  /** Whether this call stopped an open ticket, which is what a correction does to the work. */
+  stopped: boolean
+  /** Whether the alias still needs recording; false once any call recorded it, which makes a replay a no-op. */
+  learn: boolean
+}
+/** The project a ticket recorded, read from the stored row: a build without that field records no `from`. */
+function recordedProject(ticket: Ticket): string | undefined {
+  if (!('project' in ticket)) return undefined
+  const project: unknown = ticket.project
+  return typeof project === 'object' && project !== null && 'name' in project && typeof project.name === 'string' ? project.name : undefined
+}
+/** What one person's message taught: the phrase they used, the project it names, who said it, and where. */
+export interface LearnedAliasTeaching { alias: string; project: string; ticket: string; by: ActorRef; triggerId: string; at: string }
+/**
+ * The alias map with one person's teaching learned: `alias` now names `project`, and every person who taught it is kept.
+ * Two people naming different projects is settled by the later word, because an alias left unresolved keeps the index
+ * unusable until somebody notices. The one exception is a hand-maintained alias: that phrase keeps no project and is marked
+ * `ambiguous`, since overwriting a person's own configuration with a model-extracted phrase is the worse failure.
+ * @param stored the alias map as the database holds it, or undefined before anything was learned.
+ * @param teaching the phrase the person used and the project it names, which are the same until the project index resolves
+ * the phrase to a canonical name.
+ * @param evidence the person's own words, kept so a wrong reading of them stays reviewable.
+ * @returns the map to store, which shares no entry with `stored`.
+ */
+export function learnProjectAlias(stored: Record<string, LearnedProjectAlias> | undefined, teaching: LearnedAliasTeaching,
+  evidence: string): Record<string, LearnedProjectAlias> {
+  // One phrase, one key: a resolver matches text whatever case it is written in, so `TAP` and `tap` must not be two aliases.
+  const alias = teaching.alias.toLowerCase()
+  const existing = stored?.[alias]
+  const taught = { project: teaching.project, by: teaching.by, ticket: teaching.ticket, triggerId: teaching.triggerId, at: teaching.at, evidence }
+  const sources = [...existing?.sources ?? []]
+  const samePerson = (item: LearnedProjectAlias['sources'][number]) => item.by.source === taught.by.source && item.by.id === taught.by.id
+  if (!sources.some(item => item.triggerId === taught.triggerId && samePerson(item))) sources.push(taught)
+  // A hand-maintained alias the entry already carried, or one that arrived as the entry itself, is the only name a correction
+  // may not overwrite: it is a person's own configuration, not an earlier reading of a message.
+  const prior = existing?.prior ?? (existing?.source === 'hand-maintained' && existing.project
+    ? { project: existing.project, source: 'hand-maintained' as const } : undefined)
+  const differs = prior !== undefined && prior.project.toLowerCase() !== teaching.project.toLowerCase()
+  // Case is not a disagreement: `TAP` and `tap` are one project, and the spelling it was first given stays readable.
+  const spelled = prior && !differs ? prior.project : teaching.project
+  const entry: LearnedProjectAlias = differs
+    ? { alias, source: 'human-correction', prior, sources, ambiguous: true }
+    : { alias, project: spelled, source: 'human-correction', ...prior ? { prior } : {}, sources }
+  return { ...stored, [alias]: entry }
+}
+/**
+ * What the project index reads from the learned alias map: the aliases that resolve to one project, and those people
+ * disagreed about, which resolve to nothing until a person decides.
+ */
+export function readLearnedProjects(stored: Record<string, LearnedProjectAlias> | undefined): { resolved: Record<string, string>; ambiguous: string[] } {
+  const resolved: Record<string, string> = {}
+  const ambiguous: string[] = []
+  for (const [alias, entry] of Object.entries(stored ?? {})) {
+    if (entry.ambiguous || entry.project === undefined) ambiguous.push(alias)
+    else resolved[alias] = entry.project
+  }
+  return { resolved, ambiguous }
+}
 
 const sameChannel = (a: ChannelRef, b: ChannelRef): boolean => JSON.stringify(a) === JSON.stringify(b)
 /** Whether an Input is a message no person wrote, such as CI's, a bot's, or the main Session's note. */
@@ -160,6 +251,56 @@ export class Tickets extends EnginePart {
   stop(ticketId: string, reason?: string): Ticket {
     this.end(ticketId, 'human', 'stopped', this.now(), reason)
     return this.require(ticketId)
+  }
+  /**
+   * Record that a person said the ticket's project is wrong: append the correction, stop the work, and tell the conversation.
+   *
+   * A correction is a stop that also records what the person said, which is why it ends `stopped` by a person and not
+   * `dropped` by its Executor: any end other than a person's leaves the ticket resumable by the next message, and a resumed
+   * ticket keeps the Session whose working directory is the project the person just said is wrong.
+   *
+   * The ticket's own `project` is never rewritten: it says where the work actually ran, which stays true, and a pull request
+   * opened there belongs there. What the person named goes in `projectCorrections`, append-only, which is also the ledger the
+   * alias learning reads.
+   * @param ticketId the ticket the person spoke about.
+   * @param request the project they named, the message that said it, and who they are.
+   * @returns what the command did; `learn` tells the caller whether the alias still needs recording. A message that repeats a
+   * correction, and a ticket that had already ended, record nothing: only the alias is left to learn.
+   * @throws UserError when a bot's message states it, the message never reached the ticket, or the Policy does not admit its
+   * sender as an explicit one — the same gate a stop passes.
+   */
+  correctProject(ticketId: string, request: ProjectCorrectionRequest): ProjectCorrectionResult {
+    const ticket = this.require(ticketId)
+    const repeated = ticket.projectCorrections?.find(item => item.triggerId === request.triggerId)
+    if (repeated) return { ticket, correction: repeated, corrected: false, stopped: false, learn: false }
+    const trigger = this.repo.triggers.get(request.triggerId)
+    if (!trigger) throw new UserError('unknownTrigger')
+    // A person's correction goes through the gate a stop passes: they must be someone the Policy admits, speaking explicitly.
+    if (!trigger.human) throw new UserError('notAdmissible', { reason: 'a bot did not say it' })
+    if (!this.reaches(ticket, trigger)) throw new UserError('notReached')
+    const thread = this.thread(trigger.threads[0]!)
+    const gate = this.policy().gate(trigger, thread, this.ticketsOnThread(thread))
+    if (!gate.admissible) throw new UserError('notAdmissible', { reason: gate.reason })
+    if (gate.strength !== 'explicit') throw new UserError('notAdmissible', { reason: 'only an allowed sender\'s own message corrects a project' })
+    const at = this.now()
+    const from = recordedProject(ticket)
+    // Naming what the record already says is not a correction: a message holds both names ("not portal, shop"), and taking the
+    // wrong half would stop the work, teach an alias that changes nothing, and tell the person a change that did not happen.
+    if (from !== undefined && from.toLowerCase() === request.project.toLowerCase()) {
+      throw new UserError('notAdmissible', { reason: `the ticket already records ${from}; name the project it should be instead` })
+    }
+    const correction: ProjectCorrection = { ...from ? { from } : {}, to: request.project, by: request.by, triggerId: request.triggerId, at }
+    // A ticket that already ended keeps its record: the correction teaches the alias and claims nothing about the work.
+    if (!liveTicket(ticket)) return { ticket, correction, corrected: false, stopped: false, learn: true }
+    ticket.projectCorrections = [...ticket.projectCorrections ?? [], correction]
+    ticket.updatedAt = at
+    this.repo.tickets.save(ticket)
+    // The ticket took the message up, so ending it does not hand that message back to Eval as an unowned request and open
+    // the same work again in the project the person just rejected.
+    this.takeUp(ticketId, request.triggerId)
+    this.replies.announceProjectCorrected(ticket, correction, trigger.text)
+    this.end(ticketId, 'human', 'stopped', at, `Project corrected to ${request.project}`)
+    return { ticket: this.require(ticketId), correction, corrected: true, stopped: true, learn: true }
   }
   /**
    * Ends the stalled assignment of a retryable open ticket (`failed`, `blocked`, or failed input delivery) and starts a new one.
