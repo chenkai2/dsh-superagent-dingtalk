@@ -22,7 +22,7 @@ An `idle` Ticket has finished its turn without an outstanding question. A Trigge
 
 ## The Executor
 
-Each Ticket gets an Executor Session named `worker-<ticket id>` and a directory named after the Ticket's short name. Directories are created under the configured execution root, which defaults to `<stateDir>/work`.
+Each Ticket gets an Executor Session named `worker-<ticket id>` and a directory named after the Ticket's short name. Directories are created under `<stateDir>/worktrees`, never in the work root that holds the Projects, so a Ticket's checkout cannot be mistaken for the operator's.
 
 Executor Sessions run commands without approval as the operator's OS user. Their `dsh-superagent-worker` preset contains the tools needed for work and moves foreground shell commands to background jobs after 5 seconds. This lets a worker receive new messages at the next step instead of waiting for a long command to finish.
 
@@ -50,9 +50,29 @@ Worker subagents, including nested ones, use DeepSeek Harness's `standard` prese
 
 ### Preparing a Ticket directory
 
-Before the first Assignment, if the Ticket directory does not exist, the prepare command runs once with `sh` in the execution root. It has ten minutes to finish. Without a prepare command, the worker starts in an empty directory.
+Before the first Assignment, a launch prepares the directory in one order: create the Project's worktree, run the prepare command, then verify the directory.
 
-A failed command fails the Ticket and records its output. A retry or a person's message on one of the Ticket's Threads tries preparation again. A typical command uses `git worktree` to create a checkout. A pull request belongs to the Ticket when its branch's last path segment matches the Ticket's short name.
+A Ticket whose Project code resolved (`Ticket.project`) works in a worktree of that Project: `git -C <project.path> worktree add --detach <directory> <project HEAD>`. It is detached because a branch the Project's main copy has checked out cannot be checked out again, so a Ticket's work belongs on the `agent/<name>` branch its worker creates. A path that already is this Project's worktree is reused rather than created again, which a retry and a prepare command that made it both are.
+
+Creating a worktree heals what an earlier attempt left at the path first: `git worktree prune` clears a registration whose directory is gone, the path is then removed if it exists (a valid worktree and its registration go together; a directory whose `.git` file is gone is no worktree that git can remove, so its files go and the registration is pruned again), and the worktree is added last. All three steps are idempotent, so a retry at the same path succeeds instead of colliding with its own registration.
+
+A worktree that cannot be created fails the Ticket with git's reason, and the worker never starts in an empty directory instead. The same holds for a directory that holds another worktree: it is refused rather than reset, so one Ticket's changes are never mixed into another's or thrown away.
+
+Then the prepare command runs with `sh`, if one is configured, in the directory's parent, `<stateDir>/worktrees`, with the execution variables of its own Ticket. It has ten minutes to finish. This is a change of contract: a prepare command used to run in the execution root, and one that creates the Ticket's checkout with `git worktree` now finds that the engine already did. Without a prepare command, the Ticket's worktree or, without a Project, an empty directory is the worker's starting point.
+
+A failed command fails the Ticket and records its output. A retry or a person's message on one of the Ticket's Threads tries preparation again. A pull request belongs to the Ticket when its branch's last path segment matches the Ticket's short name.
+
+The directory is verified on every launch, not only when it was created, because one that merely exists may be another Ticket's worktree. With a Project the check requires that the directory's work tree root is the directory itself and that its repository is the Project's; without one it requires that the directory exists and is no one else's worktree. A Ticket recorded before directories moved keeps the directory in its record and is checked this way; it is never migrated or recomputed.
+
+### Cleaning up a Ticket directory
+
+A Ticket's directory is removed after the ticket ends, outside the ending transaction: the end runs inside a database transaction, where a file cannot be deleted and a rollback would leave the worktree gone. A launch waits for a cleanup that runs, so a Ticket a person resumed prepares its directory after the removal instead of beside it.
+
+A directory is kept while the Ticket is live, except for `failed` work: a person may still retry it, so its worktree stays for seven days and the retry then starts from a fresh one. A Ticket that ended from a pull request's close keeps its worktree for seven days, and a failed one for seven days too. One that ended with nothing to inspect gives it up at once. Any worktree unused for thirty days goes whatever else says. A directory without a Project is not a worktree and is deleted outright.
+
+Its branches are never deleted, `agent/<name>` among them: it is the root of the Ticket's pull request.
+
+Cleanup runs at startup and every six hours, and a failure is logged and kept for the panel: it never changes a Ticket's outcome. The startup sweep also removes the registrations of the directories it deleted, and any registration under `<stateDir>/worktrees` that no open Ticket uses. A registration outside that root is the operator's checkout and is left alone.
 
 ### Concurrency
 
@@ -69,13 +89,14 @@ The prepare command and Executor instructions receive the same execution variabl
 | Variable | Registered by | Value |
 | --- | --- | --- |
 | `DSH_SUPERAGENT_DIR`, `DSH_SUPERAGENT_NAME`, `DSH_SUPERAGENT_TICKET` | Executor | The Ticket's directory, short name and id |
+| `DSH_SUPERAGENT_PROJECT`, `DSH_SUPERAGENT_PROJECT_PATH` | Executor | The Project's name and the absolute path of its main work copy; both empty when the Ticket has no Project |
 | `DSH_SUPERAGENT_BLOCKED_COMMANDS` | Executor | Commands the Executor may not run |
 | `DSH_SUPERAGENT_GITHUB_REPOSITORY` | GitHub | The repository the Source watches, `owner/name` |
 | `DSH_SUPERAGENT_GITHUB_ACCOUNT`, `DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL` | GitHub | The agent account and its commit email |
 | `DSH_SUPERAGENT_GITHUB_NUMBER`, `DSH_SUPERAGENT_GITHUB_PR_HEAD` | GitHub | The Issue or pull request that started the Ticket, and its head ref when it is a pull request |
 | `DSH_SUPERAGENT_FEISHU_BOT`, `DSH_SUPERAGENT_FEISHU_CHAT` | Feishu | The bot, and the chat that started the Ticket |
 
-Ticket-specific values come from its directory and originating Trigger. Other values come from the current deployment settings. Only the panel can change execution environment settings; text sent to the main Session cannot change the configured shell command.
+Ticket-specific values come from its directory, its Project and its originating Trigger. Other values come from the current deployment settings. Only the panel can change execution environment settings; text sent to the main Session cannot change the configured shell command.
 
 Workers reach GitHub through the agent account's `gh` and Feishu through the bot's `lark-cli`. Blocked commands fail when invoked by name.
 

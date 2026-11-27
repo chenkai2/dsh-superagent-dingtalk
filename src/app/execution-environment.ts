@@ -11,11 +11,24 @@ export const EXECUTOR_VARIABLES: readonly (VariableSpec & { ticket?: true })[] =
   { key: 'DSH_SUPERAGENT_DIR', ticket: true, description: { zh: '这个工单的执行目录；执行器 Session 在其中工作', en: 'This ticket\'s directory; the executor Session works in it' } },
   { key: 'DSH_SUPERAGENT_NAME', ticket: true, description: { zh: '工单的短名，也是执行目录的名字', en: 'The ticket\'s short name, also its directory\'s name' } },
   { key: 'DSH_SUPERAGENT_TICKET', ticket: true, description: { zh: '工单 id', en: 'The ticket id' } },
+  { key: 'DSH_SUPERAGENT_PROJECT', ticket: true, description: { zh: '工单所属项目名；没有项目时为空串', en: 'The name of the project the ticket works in; empty when it has none' } },
+  { key: 'DSH_SUPERAGENT_PROJECT_PATH', ticket: true, description: { zh: '项目主工作副本的绝对路径；没有项目时为空串', en: 'The absolute path of the project\'s main work copy; empty when the ticket has no project' } },
   { key: 'DSH_SUPERAGENT_BLOCKED_COMMANDS', description: { zh: '这个执行环境禁止调用的命令，以空格分隔；不要运行它们', en: 'Commands blocked in this execution environment, separated by spaces; never run them' } },
 ]
 export interface Variable { key: string; value: string; description: Localized; owner: string }
 
+/**
+ * The configured execution root. Ticket directories do not live here since projects moved them to `worktreesRoot`; a
+ * prepare command still runs in the root of the directory it is given.
+ */
 export const executionRoot = (settings: Settings, stateDir: string): string => settings.executor.directory || join(stateDir, 'work')
+/**
+ * The root every ticket directory lives in: `<stateDir>/worktrees`, never the work root that holds the projects
+ * themselves, so a ticket's checkout cannot be mistaken for the operator's.
+ */
+export const worktreesRoot = (stateDir: string): string => join(stateDir, 'worktrees')
+/** The directory one ticket works in: its execution name under `worktreesRoot`. */
+export const worktreePath = (stateDir: string, name: string): string => join(worktreesRoot(stateDir), name)
 
 /** Lists all declared variables grouped by owner; `enabled` is false for Sources that are currently switched off. */
 export function declaredVariables(sources: SourceRegistry, settings?: Settings): { owner: string; enabled: boolean; variables: readonly VariableSpec[] }[] {
@@ -24,9 +37,12 @@ export function declaredVariables(sources: SourceRegistry, settings?: Settings):
     ...sources.declarations().map(({ kind, variables }) => ({ owner: kind, enabled: on.has(kind), variables }))]
 }
 
-export function environmentOf(input: { deployment: Deployment; sources: SourceRegistry; settings: Settings; ticket?: { id: string; name: string; directory: string }; trigger?: Trigger }): Variable[] {
+export function environmentOf(input: { deployment: Deployment; sources: SourceRegistry; settings: Settings
+  ticket?: { id: string; name: string; directory: string; project?: { name: string; path: string } }; trigger?: Trigger }): Variable[] {
   const { deployment, sources, settings, ticket, trigger } = input
-  const executor: Record<string, string> = { DSH_SUPERAGENT_BLOCKED_COMMANDS: settings.executor.blockedCommands.join(' '), ...ticket ? { DSH_SUPERAGENT_DIR: ticket.directory, DSH_SUPERAGENT_NAME: ticket.name, DSH_SUPERAGENT_TICKET: ticket.id } : {} }
+  const executor: Record<string, string> = { DSH_SUPERAGENT_BLOCKED_COMMANDS: settings.executor.blockedCommands.join(' '), ...ticket ? { DSH_SUPERAGENT_DIR: ticket.directory,
+    DSH_SUPERAGENT_NAME: ticket.name, DSH_SUPERAGENT_TICKET: ticket.id, DSH_SUPERAGENT_PROJECT: ticket.project?.name ?? '',
+    DSH_SUPERAGENT_PROJECT_PATH: ticket.project?.path ?? '' } : {} }
   const result: Variable[] = EXECUTOR_VARIABLES.filter(spec => !spec.ticket || ticket).map(spec => ({ key: spec.key, value: executor[spec.key] ?? '', description: spec.description, owner: 'executor' }))
   for (const { kind, environment, config } of sources.environments(settings)) {
     const values = environment.values({ deployment, config, ...trigger ? { trigger } : {} })
@@ -35,10 +51,11 @@ export function environmentOf(input: { deployment: Deployment; sources: SourceRe
   return result
 }
 
-/** Combines a ticket's fixed directory, name, and origin trigger with the deployment's current settings. */
+/** Combines a ticket's fixed directory, name, project and origin trigger with the deployment's current settings. */
 export function ticketEnvironment(input: { deployment: Deployment; sources: SourceRegistry; settings: Settings; ticket: Ticket; trigger?: Trigger }) {
   const { ticket, trigger, ...rest } = input
-  const values = { id: ticket.id, name: ticket.execution?.name ?? '', directory: ticket.execution?.directory ?? '' }
+  const values = { id: ticket.id, name: ticket.execution?.name ?? '', directory: ticket.execution?.directory ?? '',
+    ...ticket.project ? { project: { name: ticket.project.name, path: ticket.project.path } } : {} }
   return environmentOf({ ...rest, ticket: values, ...trigger ? { trigger } : {} })
 }
 export function environmentLines(variables: Variable[]): string {

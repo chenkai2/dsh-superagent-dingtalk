@@ -315,8 +315,24 @@ export interface Ticket {
   origin: { triggerId: string; triggerIds: string[] }
   /** What its Executor chose: its short name, directory and assignment text. */
   execution?: Execution
+  /**
+   * The project this Ticket works in, when code resolved one: the repository the Executor's work root holds. A Ticket
+   * without one works in an empty directory and finds its own project, as Tickets did before projects were resolved.
+   */
+  project?: TicketProject
   /** The latest failed delivery of an Input to its worker, until a delivery succeeds. */
   delivery?: { error: string; at: string }
+}
+/**
+ * The project a Ticket works in, as the project index and the resolver describe it: the repository's name, its work root,
+ * its repository directory, and how code resolved it — a model's word alone never decides `basis`.
+ */
+export interface TicketProject {
+  name: string
+  path: string
+  commonDir: string
+  remote?: string
+  basis: 'named' | 'indexed' | 'alias'
 }
 /**
  * A Thread a ticket follows, by its key: `own` when the ticket opened it, such as its own pull request, and when and how it
