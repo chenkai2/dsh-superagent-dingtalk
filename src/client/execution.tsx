@@ -3,14 +3,14 @@ import { useRef, useState } from 'react'
 import { TICKET_FILTERS, type TicketFilter } from '../app/api.ts'
 import type { WorkerMountFailure } from '../app/mcp-servers.ts'
 import { LIMITS } from '../limits.ts'
-import { usePoll, type SettingsView, type SourceView, type StateView } from './api.ts'
-import { DisclosureRow, Icon, InfoTip, Input, Pill } from './controls.tsx'
+import { usePoll, type ProjectIndexView, type SettingsView, type SourceView, type StateView } from './api.ts'
+import { Button, DisclosureRow, Icon, InfoTip, Input, Pill } from './controls.tsx'
 import { SaveBar } from './draft.tsx'
-import { usePanel } from './provider.tsx'
+import { useAction, usePanel } from './provider.tsx'
 import { TicketLine } from './rows.tsx'
 import { ConfigHistory, Field, Fields, ModelField, numberOf, useBlockDraft, useSettings } from './settings-kit.tsx'
 import { localized, when } from './text.ts'
-import { ConfirmButton, Hint, LabelValue, LoadMore, LoadState, Section, StatusHead } from './widgets.tsx'
+import { ConfirmButton, Hint, LabelValue, LoadMore, LoadState, Section, StatusHead, When } from './widgets.tsx'
 
 export function ExecutionStatus({ filter: current, state, reload }: {
   filter: TicketFilter; state: StateView; reload: () => Promise<void>
@@ -48,7 +48,50 @@ export function ExecutionStatus({ filter: current, state, reload }: {
       ? <TicketLine key={ticket.id} ticket={ticket} question
         onChanged={reloadTickets} /> : <TicketLine key={ticket.id} ticket={ticket} />)}</ul> : <Hint>{t('none')}</Hint>)}
     {data?.next_offset != null && <LoadMore onMore={() => setLimit(limit + 20)} />}
+    <ProjectIndex />
   </>
+}
+
+/**
+ * The project index the Executor resolves a Ticket's project from: when it was generated, how many repositories it holds,
+ * what it left out, why generating it failed, and how it differs from the previous snapshot.
+ */
+function ProjectIndex() {
+  const { t, endpoint } = usePanel()
+  const [open, setOpen] = useState(false)
+  // The index changes when git does, not every poll, so it is read less often than Tickets.
+  const { data, reload } = usePoll(() => endpoint<ProjectIndexView>('projects', 'GET'), [], 15_000)
+  const refresh = useAction(() => endpoint<ProjectIndexView>('projects/refresh', 'POST'), { reload })
+  // A host from before project-scoped execution has no index: there is nothing to report, so the section stays out.
+  if (!data) return null
+  const projects = data.projects ?? [], skipped = data.skipped ?? []
+  const added = data.diff?.added ?? [], removed = data.diff?.removed ?? []
+  return <Section title={t('projectIndex')} count={projects.length} hint={t('projectIndexHint')}
+    action={<Button variant="outline" size="sm" icon={<Icon name="refresh" />} disabled={refresh.busy}
+      onClick={() => void refresh.run()}>{t('projectIndexRefresh')}</Button>}>
+    <div className="dt-project-index">
+      <div className="dt-row-meta">
+        <LabelValue label={t('projectIndexGenerated')} value={<When at={data.generatedAt} />} />
+        {added.length > 0 && <LabelValue label={t('projectIndexAdded')} value={added.length} />}
+        {removed.length > 0 && <LabelValue label={t('projectIndexRemoved')} value={removed.length} />}
+        {data.diff && !added.length && !removed.length && <span>{t('projectIndexUnchanged')}</span>}
+      </div>
+      {/* A failure keeps the projects it did collect above it; the reason is what a person acts on. */}
+      {data.problem && <p className="dt-error dt-project-index-problem" role="alert">
+        {t('projectIndexProblem')}{data.problem}</p>}
+      {skipped.length > 0 && <DisclosureRow icon={<Icon name="filter" />} open={open} onToggle={() => setOpen(!open)}
+        title={t('projectIndexSkipped', { count: skipped.length })}>
+        <div className="dt-disclosure-body">
+          <table className="dt-table">
+            <thead><tr><th>{t('projectIndexSkippedPath')}</th><th>{t('projectIndexSkippedWhy')}</th></tr></thead>
+            <tbody>{skipped.map(item => <tr key={item.path}>
+              <td className="dt-mono">{item.path}</td><td>{item.why}</td>
+            </tr>)}</tbody>
+          </table>
+        </div>
+      </DisclosureRow>}
+    </div>
+  </Section>
 }
 
 const firstSentence = (text: string): string => /^[^。；;.]*(?:[。；;]|\.(?=\s|$))?/.exec(text)?.[0] ?? text

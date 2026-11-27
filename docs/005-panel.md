@@ -31,6 +31,10 @@ A human follow-up still owned by an Executor is marked **Delivered to Ticket**, 
 
 Ticket details show the originating Trigger, Decision and reason, scope and Policy version. Assignments and secondary details are folded below the immediate actions. **Retry** is available for failed Input delivery or a Ticket waiting for a person after a blocked or failed Report. Ended Tickets show outcomes such as **Pull request merged** or **Stopped by a person**.
 
+A Ticket card marks the project its Executor works in and how code resolved that project, at three strengths a person can tell apart: **named** when the message itself named it, **indexed** when the project index resolved the name, and **alias** when an alias table entry matched. A project a model inferred is marked as a warning, because a person has to confirm it. When a person said the project was wrong, the card also shows **Corrected: A → B**; the record is append-only, so a repeated mistake stays visible.
+
+The Execution page ends with the project index dispatch reads: when it was generated, how many projects the work root holds, the difference from the previous snapshot, why generating it failed, and the directories it skipped, each with the host's reason. **Refresh index** asks the host to generate it again. The index records facts only and is generated in the background, so the page never compares a project count with a directory count, and a host without an index shows nothing rather than an empty shell.
+
 ## Settings groups
 
 - **Sources:** one card per Source with its switch, fields and verified account facts. GitHub also offers receive-all switches for new Issues, pull requests, comments and default-branch CI. Polling and read limits are under Advanced.

@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
-// The Settings groups, drafts, save bars and history.
+// The Settings groups, drafts, save bars and history, and the project index the Execution page reports beside them.
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Fields } from '../src/client/settings-kit.tsx'
-import { expect, it, onTestFinished } from 'vitest'
-import { zh } from '../src/client/locales.ts'
+import { expect, it, onTestFinished, vi } from 'vitest'
+import type { ProjectIndexView, TicketProjectView, TicketRow } from '../src/client/api.ts'
+import { en, zh } from '../src/client/locales.ts'
 import { usePanel, mount, remount, settle, all, find, tab, click, type, text, field } from './fixtures/panel.tsx'
-import { server } from './fixtures/panel-server.ts'
+import { server, ticketSummary } from './fixtures/panel-server.ts'
 
 usePanel()
 it('keeps a person\'s own value where another save changed the same setting, and says so', async () => {
@@ -161,4 +162,117 @@ it('says on the Execution settings which plugin or MCP server did not mount, and
   // The row says which name, why in the interface language, how often, and when the last attempt was.
   expect(rows[0]).toMatch(new RegExp(`^dbx${zh['mountFailure.not-configured']} · 已失败 2 次 · .*前the profile no longer configures dbx$`))
   expect(rows[1]).toMatch(new RegExp(`^@acme/memory${zh['mountFailure.not-installed']} · 已失败 1 次 · .*前Cannot find package$`))
+})
+
+/**
+ * The project index the Execution page reports, and the project facts a Ticket card carries. Both read fields a host adds
+ * with project-scoped execution, so both are exercised against fixtures rather than the shared fake host's route table.
+ */
+const projectIndex = (fields: Partial<ProjectIndexView> = {}): ProjectIndexView => ({
+  generatedAt: '2026-11-27T07:00:00Z', root: '/srv/work',
+  projects: [{ name: 'portal.example.com', path: '/srv/work/portal.example.com' },
+    { name: 'shop.example.com', path: '/srv/work/shop.example.com', remote: 'git@example.test:shop.git' }],
+  skipped: [{ path: '/srv/work/broken', why: 'not a git repository' }],
+  diff: { added: ['portal.example.com'], removed: [] }, ...fields,
+})
+/** Answer the project index endpoints in front of the shared fake host, and record their requests. */
+function serveProjectIndex(answer: ProjectIndexView | 'absent') {
+  const forward = globalThis.fetch
+  const requests: { path: string; method: string }[] = []
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const path = new URL(String(input), 'http://127.0.0.1:3082').pathname.replace('/orchestrator/api/', '')
+    if (path !== 'projects' && path !== 'projects/refresh') return forward(input, init)
+    requests.push({ path, method: init?.method ?? 'GET' })
+    // A host from before project-scoped execution has neither route, which DSH's web server answers as an empty 404.
+    return answer === 'absent' ? new Response(null, { status: 404 })
+      : new Response(JSON.stringify(answer), { status: 200, headers: { 'content-type': 'application/json' } })
+  }))
+  return requests
+}
+/** Add project facts to a Ticket fixture without widening the shared fake host's row type. */
+const withProject = (ticket: TicketRow, facts: TicketProjectView) => Object.assign(ticket, facts)
+
+it('reports the project index on the Execution page: when it was generated, how many projects, what it skipped, and why it failed',
+  async () => {
+  const requests = serveProjectIndex(projectIndex({ problem: 'git rev-parse timed out in /srv/work/broken',
+    diff: { added: ['portal.example.com'], removed: ['old.example.com'] } }))
+  await mount()
+  await click(zh['tab.execution'])
+  const section = () => document.querySelector('.dt-project-index')!.closest('.dt-section')!
+  expect(section().querySelector('.dt-section-name')?.textContent).toBe(zh.projectIndex)
+  expect(section().querySelector('.dt-section-title .dt-count')?.textContent).toBe('2')
+  // Each fact by its label: when the index was generated, how many projects, and the difference from the last snapshot.
+  const facts = () => all('.dt-project-index .dt-lv').map(item => [item.querySelector('.dt-lv-label')?.textContent,
+    item.querySelector('.dt-lv-value')?.textContent])
+  expect(facts()).toEqual([[zh.projectIndexGenerated, expect.any(String)], [zh.projectIndexAdded, '1'],
+    [zh.projectIndexRemoved, '1']])
+  expect(section().querySelector('time')?.getAttribute('datetime')).toBe('2026-11-27T07:00:00Z')
+  // A generation failure is stated with the reason the host gave, in the interface's words before it.
+  expect(section().querySelector('.dt-project-index-problem')?.textContent)
+    .toBe(`${zh.projectIndexProblem}git rev-parse timed out in /srv/work/broken`)
+  // A skipped directory is behind its own disclosure, with its path and reason.
+  expect(text()).not.toContain('not a git repository')
+  await click(zh.projectIndexSkipped.replace('{count}', '1'))
+  expect(all('.dt-project-index .dt-table td').map(cell => cell.textContent)).toEqual(['/srv/work/broken', 'not a git repository'])
+  // Refreshing asks the host to regenerate and then reads the index again.
+  await click(zh.projectIndexRefresh)
+  expect(requests.filter(request => request.method === 'POST')).toEqual([{ path: 'projects/refresh', method: 'POST' }])
+  expect(requests.filter(request => request.method === 'GET').length).toBeGreaterThan(1)
+  // The same section in English, in sentence case.
+  await remount(en)
+  await click(en['tab.execution'])
+  expect(document.querySelector('.dt-section-name')?.textContent).toBe(en.projectIndex)
+  expect(find(en.projectIndexRefresh).textContent).toBe(en.projectIndexRefresh)
+  expect(all('.dt-project-index .dt-lv').map(item => item.querySelector('.dt-lv-label')?.textContent))
+    .toEqual([en.projectIndexGenerated, en.projectIndexAdded, en.projectIndexRemoved])
+  // No change is said once, instead of two zero counts.
+  serveProjectIndex(projectIndex({ diff: { added: [], removed: [] } }))
+  await remount()
+  await click(zh['tab.execution'])
+  expect(text()).toContain(zh.projectIndexUnchanged)
+  expect(all('.dt-project-index .dt-lv').map(item => item.querySelector('.dt-lv-label')?.textContent)).toEqual([zh.projectIndexGenerated])
+})
+
+it('leaves the project index and a Ticket\'s project out rather than showing an empty shell when the host has neither',
+  async () => {
+  // A host from before project-scoped execution answers 404 for the index and sends neither Ticket field.
+  serveProjectIndex('absent')
+  await mount()
+  await click(zh['tab.execution'])
+  expect(document.querySelector('.dt-project-index')).toBeNull()
+  expect(text()).not.toContain(zh.projectIndex)
+  expect(document.querySelector('.dt-project')).toBeNull()
+  expect(all('.dt-project-correction')).toEqual([])
+})
+
+it('marks a Ticket card with its project and how code resolved it, and with a correction a person made', async () => {
+  server.tickets.open = [
+    withProject(ticketSummary(), { project: { name: 'portal.example.com', basis: 'named' } }),
+    withProject(ticketSummary({ id: 't2', title: '索引工单' }), { project: { name: 'shop.example.com', basis: 'indexed' } }),
+    withProject(ticketSummary({ id: 't3', title: '别名工单' }), { project: { name: 'cart.example.com', basis: 'alias' },
+      projectCorrections: [{ from: 'portal.example.com', to: 'cart.example.com', at: '2026-11-27T06:00:00Z' }] }),
+  ]
+  serveProjectIndex('absent')
+  await mount()
+  await click(zh['tab.execution'])
+  const cards = () => all('.dt-project').map(card => ({ basis: card.getAttribute('data-basis'),
+    name: card.querySelector('.dt-tag')?.textContent, tone: card.querySelector('.dt-tag')?.getAttribute('data-tone') }))
+  // Three strengths a person can tell apart: a named project reads strongest, an alias weakest, an index match in between.
+  expect(cards()).toEqual([
+    { basis: 'named', name: `portal.example.com${zh['projectBasis.named']}`, tone: 'info' },
+    { basis: 'indexed', name: `shop.example.com${zh['projectBasis.indexed']}`, tone: 'neutral' },
+    { basis: 'alias', name: `cart.example.com${zh['projectBasis.alias']}`, tone: 'quiet' },
+  ])
+  expect(all('.dt-project-correction').map(correction => correction.textContent))
+    .toEqual([zh.projectCorrected.replace('{from}', 'portal.example.com').replace('{to}', 'cart.example.com')])
+  // An inferred project, if a host ever reports one, is the one strength that has to be noticed.
+  server.tickets.open = [withProject(ticketSummary(), { project: { name: 'portal.example.com', basis: 'inferred' } })]
+  await remount()
+  await click(zh['tab.execution'])
+  expect(cards()).toEqual([{ basis: 'inferred', name: `portal.example.com${zh['projectBasis.inferred']}`, tone: 'warning' }])
+  // The same facts in English, in sentence case.
+  await remount(en)
+  await click(en['tab.execution'])
+  expect(cards()).toEqual([{ basis: 'inferred', name: `portal.example.com${en['projectBasis.inferred']}`, tone: 'warning' }])
+  expect(all('.dt-project-correction').map(correction => correction.textContent)).toEqual([])
 })

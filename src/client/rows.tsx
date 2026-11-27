@@ -1,17 +1,43 @@
 /** Shared list rows for Tickets, Threads, and Decisions, plus Source fact chips and automated-message run folding. */
 import { useState } from 'react'
-import type { DecisionRow, ThreadFacts, ThreadRow, TicketRow } from './api.ts'
-import { Icon, Tag } from './controls.tsx'
+import type { DecisionRow, ThreadFacts, ThreadRow, TicketProjectView, TicketRow } from './api.ts'
+import { ticketProject } from './api.ts'
+import { Icon, Tag, type TagTone } from './controls.tsx'
 import { decisionMark, threadMark, ticketMark } from './marks.ts'
 import { usePanel } from './provider.tsx'
 import { actorName, localized, readableMarkers, reasonLabel, valueLabel } from './text.ts'
 import { ActionLink, ConfirmButton, LabelValue, SessionButton, StageMark, When } from './widgets.tsx'
+
+/** How strongly a project name is established, from a name in the message down to a guess. */
+const PROJECT_TONES: Readonly<Record<string, TagTone>> = { named: 'info', indexed: 'neutral', alias: 'quiet', inferred: 'warning' }
+
+/**
+ * The project a Ticket runs in and how code resolved it, plus any correction a person made. A named project reads
+ * strongest and an alias weakest; an inferred project is the one strength marked for a person to check.
+ */
+function ProjectFacts({ project, projectCorrections = [] }: TicketProjectView) {
+  const { t } = usePanel()
+  const basis = project?.basis ?? ''
+  const label = valueLabel(t, 'projectBasis', basis)
+  return <>
+    {project && <span className="dt-project" data-basis={basis || undefined} title={t('projectBasisHint')}>
+      <Tag tone={PROJECT_TONES[basis] ?? 'neutral'}>
+        {basis === 'inferred' && <Icon name="alert" size={12} />}{project.name}
+        {label && <span className="dt-project-basis">{label}</span>}
+      </Tag>
+    </span>}
+    {projectCorrections.map((correction, index) => correction.from && correction.to
+      ? <span key={index} className="dt-project-correction">{t('projectCorrected', { from: correction.from, to: correction.to })}</span>
+      : null)}
+  </>
+}
 
 export function TicketLine({ ticket, question, onChanged, context }: {
   ticket: TicketRow; question?: boolean; onChanged?: () => Promise<void>; context?: boolean
 }) {
   const { t, call, navigate } = usePanel()
   const status = ticketMark(t, ticket)
+  const facts = ticketProject(ticket)
   const after = async (request: Promise<unknown>) => { await request; await onChanged?.() }
   const note = question && ticket.note && { ...ticket.note, text: readableMarkers(t, ticket.note.text) }
   const answer = ticket.reply && ticket.stage === 'person' && ticket.action === 'answer' ? ticket.reply : undefined
@@ -21,6 +47,7 @@ export function TicketLine({ ticket, question, onChanged, context }: {
       <div className="dt-row-title"><button type="button" className="dt-open" onClick={() => navigate({ page: 'execution',
         id: ticket.id })}>{ticket.title}</button></div>
       <div className="dt-row-meta dt-ticket-meta">
+        <ProjectFacts {...facts} />
         {ticket.threads.map(thread => <ThreadChip key={thread.key} thread={thread} />)}
         {context && <ContextTag />}
         {ticket.undelivered > 0 && <LabelValue label={t('ticketUndeliveredLabel')} value={ticket.undelivered} />}

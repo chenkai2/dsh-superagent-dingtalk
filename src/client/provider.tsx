@@ -1,7 +1,7 @@
 /** Shared panel React contexts, state polling, restart detection, and action runner hook. */
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { caller, usePoll, type ApiMessages, type Call, type SetupView, type StateView } from './api.ts'
+import { apiPath, caller, usePoll, type ApiMessages, type Call, type SetupView, type StateView } from './api.ts'
 import type { Route } from './route.ts'
 import STYLES from './client.css?raw'
 import { errorText, setupText, valueLabel, type T } from './text.ts'
@@ -9,6 +9,8 @@ import { errorText, setupText, valueLabel, type T } from './text.ts'
 export interface PanelContext {
   t: T
   call: Call
+  /** Read a route by literal path, for one the host's typed route table does not list yet, such as the project index. */
+  endpoint: <T>(path: string, method: 'GET' | 'POST') => Promise<T>
   navigate: (route: Route, replace?: boolean) => void
   back: () => void
   backLabel: string
@@ -80,6 +82,8 @@ export function PanelProvider({ t, interval = 5000, openSession = noSession, nav
   const copy = useRef(t)
   copy.current = t
   const call = useMemo(() => caller(() => messages(copy.current)), [])
+  const endpoint = useCallback(<T,>(path: string, method: 'GET' | 'POST'): Promise<T> =>
+    apiPath<T>(messages(copy.current), path, method), [])
   const [toast, setToast] = useState<{ text: string; id: number }>()
   const notify = useCallback((text: string) => setToast({ text, id: Date.now() }), [])
   // Poll at 1s during a restart until the server goes down and answers again, or time out after 30s if the restart completed between polls.
@@ -96,8 +100,8 @@ export function PanelProvider({ t, interval = 5000, openSession = noSession, nav
     const timer = setTimeout(() => setRestarting(undefined), 30_000)
     return () => clearTimeout(timer)
   }, [restarting])
-  const context = useMemo(() => ({ t, call, navigate, back, backLabel, openSession, notify, restart }), [t, call, navigate, back, backLabel,
-    openSession, notify, restart])
+  const context = useMemo(() => ({ t, call, endpoint, navigate, back, backLabel, openSession, notify, restart }), [t, call, endpoint, navigate,
+    back, backLabel, openSession, notify, restart])
   const data = useMemo(() => ({ state, error, reload, setup: state?.setup, running: state?.load.running ?? 0, restarts }), [state, error,
     reload, restarts])
   return <Panel.Provider value={context}><PanelState.Provider value={data}>
