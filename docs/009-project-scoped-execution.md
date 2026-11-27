@@ -240,7 +240,7 @@ v1 曾把「目录根迁出工作根」单独作为第 2 步：评审实测后�
 已定（复评后收敛）：
 
 - **别名分两个文件**：人工 `projects-aliases.json`、机器 `projects-learned.json`（原子写、schema 校验、逐条 skipped）。
-- **`projectCorrection` 是 append-only 数组**，`project` 不可变；两人纠正不同项目进面板待裁决。
+- **`projectCorrection` 是 append-only 数组**，`project` 不可变；同一别名被两人纠正到不同项目时**以最后一条为准**，旧值留在 `sources` 里供追查。
 - **纠正用 `stopped`/`by:human`**，不新增 outcome；引擎自己发那条 IM。
 - **工具命名**：`orchestrator_ticket_project_correct`（仓里工具一律 `orchestrator_*`）。
 - **project 字段的唯一解析点**：新增 resolver 于 `src/app/projects.ts`，`orchestrator_route` 与 `orchestrator_eval_decide` 两条 accept 路径都调它，`basis` 只在 resolver 里算一次（`AssessmentSchema`／`RouteItemSchema` 都是 `.strict()`，新字段要同时改 `FIELDS` 表、`ports.ts` 的 accept 变体、`policy.ts` 的映射、`runtime.ts` 的 `prepareTicket`）。
